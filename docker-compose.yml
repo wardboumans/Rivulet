@@ -1,0 +1,19 @@
+services:
+  rivulet:
+    image: ghcr.io/wardboumans/rivulet:latest
+    # Or build from this checkout instead of pulling: `docker compose up --build`
+    build: .
+    container_name: rivulet
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # The SQLite database (feeds, articles, settings, saved API keys) is kept on the host in ./data.
+      - ./data:/data
+    # Optional: APP_PASSWORD, and API keys if you prefer them over Settings. See .env.example.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_PATH: /data/reader.db
+      TZ: Europe/Amsterdam

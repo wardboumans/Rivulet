@@ -1,0 +1,22 @@
+# Rebuilt inside the image
+node_modules
+.next
+out
+build
+*.tsbuildinfo
+next-env.d.ts
+
+# Local data and secrets never go into the image
+data
+.env*
+!.env.example
+
+# Repo / editor clutter
+.git
+.github
+.vscode
+.idea
+.DS_Store
+npm-debug.log*
+Dockerfile
+.dockerignore

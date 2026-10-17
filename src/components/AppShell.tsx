@@ -1,0 +1,1219 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ArrowDownUp,
+  Check,
+  Filter as FilterIcon,
+  FolderInput,
+  LayoutList,
+  Newspaper,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Zap,
+} from "lucide-react";
+import { api, readStored, writeStored } from "@/lib/client";
+import {
+  scopeToParams,
+  type AppSettings,
+  type ArticleListItem,
+  type ArticlePage,
+  type Scope,
+  type Sidebar,
+  type SidebarFeed,
+  type SidebarFolder,
+  type SidebarMonitor,
+  type NewArticlesCheck,
+} from "@/lib/types";
+import {
+  AddFeedPage,
+  AddPanel,
+  AddTabsMobile,
+  ImportPage,
+  type AddTab,
+} from "./AddNew";
+import { ArticleList, type ListLayout } from "./ArticleList";
+import {
+  AutomatePanel,
+  AutomateTabsMobile,
+  RulesPage,
+  type AutomateSection,
+} from "./Automations";
+import { FiltersPage } from "./Filters";
+import { ArticleView } from "./ArticleView";
+import { PromptDialog } from "./Dialogs";
+import {
+  SETTINGS_SECTIONS,
+  SettingsPage,
+  SettingsPanel,
+  SettingsTabsMobile,
+  type SettingsSection,
+} from "./SettingsPage";
+import { MonitorEditor } from "./MonitorEditor";
+import { Rail, type Theme } from "./Rail";
+import { SidebarPanel } from "./SidebarPanel";
+import { ConfirmHost, confirmDialog } from "./ConfirmDialog";
+import type { MenuItem } from "./ui";
+import { primaryButton } from "./ui";
+
+/** Reading feeds, or the "Add new" pages (web feed, monitoring feed editor, import). */
+type Mode =
+  | { kind: "read" }
+  | { kind: "add"; tab: AddTab; monitorId?: number }
+  | {
+      kind: "automate";
+      section: AutomateSection;
+      /** Set by a feed/folder menu's "Create rule…" / "Filter articles…" to open a new item aimed at it. */
+      presetFeedId?: number;
+      presetFolderId?: number;
+    }
+  | { kind: "settings"; section: SettingsSection };
+
+type DialogState =
+  | null
+  | { kind: "rename-feed"; feed: SidebarFeed }
+  | { kind: "rename-folder"; folder: SidebarFolder }
+  | { kind: "new-folder"; moveFeedId?: number };
+
+function scopeFromLocation(): Scope {
+  const p = new URLSearchParams(window.location.search);
+  const id = Number(p.get("feed") ?? p.get("folder") ?? p.get("monitor"));
+  if (p.has("feed") && id) return { kind: "feed", id };
+  if (p.has("folder") && id) return { kind: "folder", id };
+  if (p.has("monitor") && id) return { kind: "monitor", id };
+  if (p.has("saved")) return { kind: "saved" };
+  if (p.has("q")) return { kind: "search", q: p.get("q") ?? "" };
+  return { kind: "all" };
+}
+
+function scopeToLocation(scope: Scope): string {
+  switch (scope.kind) {
+    case "all":
+      return "/";
+    case "saved":
+      return "/?saved";
+    case "feed":
+      return `/?feed=${scope.id}`;
+    case "folder":
+      return `/?folder=${scope.id}`;
+    case "monitor":
+      return `/?monitor=${scope.id}`;
+    case "search":
+      return `/?q=${encodeURIComponent(scope.q)}`;
+  }
+}
+
+/** /automate/<section> and /settings/<section> open those pages; every other path is the reader. */
+function modeFromLocation(): Mode {
+  const path = window.location.pathname;
+  const a = /^\/automate(?:\/(rules|filters))?\/?$/.exec(path);
+  if (a)
+    return {
+      kind: "automate",
+      section: a[1] === "filters" ? "filters" : "rules",
+    };
+  const s = /^\/settings(?:\/([a-z]+))?\/?$/.exec(path);
+  if (s) {
+    const section =
+      SETTINGS_SECTIONS.find((x) => x.id === s[1])?.id ?? "general";
+    return { kind: "settings", section };
+  }
+  return { kind: "read" };
+}
+
+function applyTheme(theme: Theme) {
+  if (theme === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+}
+
+export function AppShell() {
+  const [sidebar, setSidebar] = useState<Sidebar | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [scope, setScope] = useState<Scope>(scopeFromLocation);
+  const [unreadOnly, setUnreadOnly] = useState(() =>
+    readStored("rivulet-unread-only", true),
+  );
+  const [oldestFirst, setOldestFirst] = useState(() =>
+    readStored("rivulet-oldest-first", false),
+  );
+  const [layout, setLayout] = useState<ListLayout>(() =>
+    readStored<ListLayout>("rivulet-layout", "titles"),
+  );
+  const [theme, setTheme] = useState<Theme>(() => {
+    const t = document.documentElement.dataset.theme;
+    return t === "light" || t === "dark" ? t : "system";
+  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    readStored("rivulet-sidebar-collapsed", false),
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    readStored("rivulet-sidebar-width", 340),
+  );
+  const [listWidth, setListWidth] = useState(() =>
+    readStored("rivulet-list-width", 380),
+  );
+  const [navOpen, setNavOpen] = useState(false);
+  const [mode, setModeState] = useState<Mode>(modeFromLocation);
+
+  const searchMode = scope.kind === "search";
+  // Saved and search views list everything; "unread only" applies to feed views.
+  const effectiveUnreadOnly =
+    unreadOnly && scope.kind !== "saved" && !searchMode;
+
+  // The list belongs to one query; when the query changes, the stale list is simply ignored
+  // until the new one arrives (no reset-in-effect needed).
+  const queryKey = JSON.stringify([scope, effectiveUnreadOnly, oldestFirst]);
+  type ListState = {
+    key: string;
+    items: ArticleListItem[];
+    cursor: string | null;
+    unread: number;
+    /** Newest article id when the list loaded; newer ones count as "new". */
+    highWater: number;
+    newCount: number;
+  };
+  const [list, setList] = useState<ListState | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [selection, setSelection] = useState<{
+    key: string;
+    id: number;
+  } | null>(null);
+  const [dialog, setDialog] = useState<DialogState>(null);
+
+  const current = list?.key === queryKey ? list : null;
+  const items = useMemo(() => current?.items ?? [], [current]);
+  const cursor = current?.cursor ?? null;
+  const hasMore = !!cursor;
+  const loading = !current || loadingMore;
+  const scopeUnread = current?.unread ?? 0;
+  const newCount = current?.newCount ?? 0;
+  const highWater = current?.highWater ?? null;
+  const selectedId = selection?.key === queryKey ? selection.id : null;
+
+  // ---------- persistence ----------
+  useEffect(() => {
+    writeStored("rivulet-unread-only", unreadOnly);
+    writeStored("rivulet-oldest-first", oldestFirst);
+    writeStored("rivulet-layout", layout);
+    writeStored("rivulet-sidebar-collapsed", sidebarCollapsed);
+    writeStored("rivulet-sidebar-width", sidebarWidth);
+    writeStored("rivulet-list-width", listWidth);
+  }, [
+    unreadOnly,
+    oldestFirst,
+    layout,
+    sidebarCollapsed,
+    sidebarWidth,
+    listWidth,
+  ]);
+
+  useEffect(() => {
+    api<AppSettings>("/api/settings")
+      .then(setSettings)
+      .catch(() => {});
+    const onPop = () => {
+      setScope(scopeFromLocation());
+      setModeState(modeFromLocation());
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // ---------- data loading ----------
+  const applySidebar = useCallback((s: Sidebar) => {
+    setSidebar(s);
+    return s;
+  }, []);
+
+  const loadSidebar = useCallback(
+    () => api<Sidebar>("/api/sidebar").then(applySidebar),
+    [applySidebar],
+  );
+
+  const fetchPage = useCallback(
+    (after: string | null): Promise<ArticlePage> => {
+      if (scope.kind === "search" && !scope.q)
+        return Promise.resolve({
+          items: [],
+          nextCursor: null,
+          unread: 0,
+          highWater: 0,
+        });
+      const p = scopeToParams(scope);
+      if (effectiveUnreadOnly) p.set("unread", "1");
+      if (oldestFirst) p.set("sort", "oldest");
+      if (after) p.set("cursor", after);
+      return api<ArticlePage>(`/api/articles?${p}`);
+    },
+    [scope, effectiveUnreadOnly, oldestFirst],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPage(null)
+      .then(
+        (page) =>
+          !cancelled &&
+          setList({
+            key: queryKey,
+            items: page.items,
+            cursor: page.nextCursor,
+            unread: page.unread,
+            highWater: page.highWater,
+            newCount: 0,
+          }),
+      )
+      .catch(
+        () =>
+          !cancelled &&
+          setList({
+            key: queryKey,
+            items: [],
+            cursor: null,
+            unread: 0,
+            highWater: 0,
+            newCount: 0,
+          }),
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchPage, queryKey, reloadToken]);
+
+  const loadMore = useCallback(() => {
+    if (!current?.cursor || loadingMore) return;
+    const key = current.key;
+    setLoadingMore(true);
+    fetchPage(current.cursor)
+      .then((page) =>
+        setList((l) =>
+          l && l.key === key
+            ? {
+                ...l,
+                items: [
+                  ...l.items,
+                  ...page.items.filter(
+                    (i) => !l.items.some((x) => x.id === i.id),
+                  ),
+                ],
+                cursor: page.nextCursor,
+                unread: page.unread,
+              }
+            : l,
+        ),
+      )
+      .finally(() => setLoadingMore(false));
+  }, [current, loadingMore, fetchPage]);
+
+  const reloadList = useCallback(() => setReloadToken((t) => t + 1), []);
+
+  const reloadAll = useCallback(() => {
+    loadSidebar();
+    reloadList();
+  }, [loadSidebar, reloadList]);
+
+  // Poll the sidebar: quickly while a refresh runs (e.g. after OPML import), otherwise once a minute.
+  const refreshing = !!sidebar?.refreshing;
+  useEffect(() => {
+    const tick = () =>
+      api<Sidebar>("/api/sidebar")
+        .then(applySidebar)
+        .catch(() => {});
+    tick();
+    const t = setInterval(tick, refreshing ? 3000 : 60000);
+    return () => clearInterval(t);
+  }, [applySidebar, refreshing]);
+
+  // Ask whether the current view got articles newer than the list (and keep its unread count
+  // live). Checked on load of the list, whenever the sidebar totals change, and once a minute.
+  const totalUnread = sidebar?.totalUnread;
+  useEffect(() => {
+    if (highWater === null || (scope.kind === "search" && !scope.q)) return;
+    const key = queryKey;
+    const p = scopeToParams(scope);
+    if (effectiveUnreadOnly) p.set("unread", "1");
+    p.set("after", String(highWater));
+    const check = () =>
+      api<NewArticlesCheck>(`/api/articles/new?${p}`)
+        .then((r) =>
+          setList((l) =>
+            l && l.key === key && l.highWater === highWater
+              ? { ...l, newCount: r.newCount, unread: r.unread }
+              : l,
+          ),
+        )
+        .catch(() => {});
+    check();
+    const t = setInterval(check, 60000);
+    return () => clearInterval(t);
+  }, [queryKey, highWater, scope, effectiveUnreadOnly, totalUnread]);
+
+  // ---------- navigation ----------
+  /**
+   * Switch between the reader, "Add new" and Automate, keeping the URL in sync: Automate lives at
+   * /automate/<section>; everything else shows the current scope's URL. Presets aren't put in the
+   * URL, so reloading never reopens a half-made rule or filter.
+   */
+  const setMode = useCallback(
+    (m: Mode) => {
+      setModeState(m);
+      const url =
+        m.kind === "automate"
+          ? `/automate/${m.section}`
+          : m.kind === "settings"
+            ? `/settings/${m.section}`
+            : scopeToLocation(scope);
+      if (url !== window.location.pathname + window.location.search)
+        window.history.pushState(null, "", url);
+    },
+    [scope],
+  );
+
+  const select = useCallback((s: Scope) => {
+    setScope(s);
+    setModeState({ kind: "read" });
+    setNavOpen(false);
+    const url = scopeToLocation(s);
+    if (url !== window.location.pathname + window.location.search)
+      window.history.pushState(null, "", url);
+  }, []);
+
+  // ---------- article state ----------
+  const patchItem = (id: number, patch: Partial<ArticleListItem>) =>
+    setList(
+      (l) =>
+        l && {
+          ...l,
+          items: l.items.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+        },
+    );
+  const setScopeUnread = (fn: (n: number) => number) =>
+    setList((l) => l && { ...l, unread: fn(l.unread) });
+  const setSelectedId = useCallback(
+    (id: number | null) =>
+      setSelection(id === null ? null : { key: queryKey, id }),
+    [queryKey],
+  );
+
+  const setRead = useCallback(
+    async (a: ArticleListItem, isRead: boolean) => {
+      if (a.isRead === isRead) return;
+      patchItem(a.id, { isRead });
+      setScopeUnread((n) => Math.max(0, n + (isRead ? -1 : 1)));
+      await api(`/api/articles/${a.id}`, { method: "PATCH", json: { isRead } });
+      loadSidebar();
+    },
+    [loadSidebar],
+  );
+
+  const toggleSave = useCallback(
+    async (a: ArticleListItem) => {
+      patchItem(a.id, { isSaved: !a.isSaved });
+      await api(`/api/articles/${a.id}`, {
+        method: "PATCH",
+        json: { isSaved: !a.isSaved },
+      });
+      loadSidebar();
+    },
+    [loadSidebar],
+  );
+
+  const open = useCallback(
+    (a: ArticleListItem) => {
+      setSelectedId(a.id);
+      if (!a.isRead) setRead(a, true);
+    },
+    [setRead, setSelectedId],
+  );
+
+  const selected = useMemo(
+    () => items.find((a) => a.id === selectedId) ?? null,
+    [items, selectedId],
+  );
+
+  const step = useCallback(
+    (dir: 1 | -1) => {
+      if (!items.length) return;
+      const idx = selected ? items.findIndex((a) => a.id === selected.id) : -1;
+      const next = items[idx + dir] ?? (idx === -1 ? items[0] : null);
+      if (next) open(next);
+      if (dir === 1 && idx >= items.length - 3 && hasMore) loadMore();
+    },
+    [items, selected, open, hasMore, loadMore],
+  );
+
+  const markAllRead = useCallback(
+    async (olderThanMs?: number) => {
+      // Bounded by the newest article that existed when the list loaded, so anything that
+      // arrived since (the "new articles" the button offers) stays unread.
+      const maxId = highWater || items.reduce((m, a) => Math.max(m, a.id), 0);
+      const body = {
+        ...Object.fromEntries(scopeToParams(scope)),
+        id: "id" in scope ? scope.id : undefined,
+        maxId: maxId || undefined,
+        olderThanMs,
+      };
+      await api("/api/articles/mark-read", { method: "POST", json: body });
+      await loadSidebar();
+      if (!olderThanMs) {
+        setList(
+          (l) =>
+            l && {
+              ...l,
+              items: l.items.map((a) => ({ ...a, isRead: true })),
+              unread: 0,
+            },
+        );
+      }
+      reloadList();
+    },
+    [items, highWater, scope, loadSidebar, reloadList],
+  );
+
+  const refreshFeeds = useCallback(async () => {
+    setSidebar((s) => (s ? { ...s, refreshing: true } : s));
+    await api("/api/refresh", { method: "POST", json: {} }).catch(() => {});
+    reloadAll();
+  }, [reloadAll]);
+
+  // ---------- keyboard shortcuts ----------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (
+        dialog ||
+        mode.kind !== "read" ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey ||
+        t.closest(
+          "input, textarea, select, [contenteditable=true], [role=dialog]",
+        )
+      )
+        return;
+      const k = e.key;
+      if (k === "j" || k === "n") step(1);
+      else if (k === "k" || k === "p") step(-1);
+      else if (k === "s" && selected) toggleSave(selected);
+      else if (k === "m" && selected) setRead(selected, !selected.isRead);
+      else if (k === "v" && selected?.url)
+        window.open(selected.url, "_blank", "noopener");
+      else if (k === "r") refreshFeeds();
+      else if (k === "A" && e.shiftKey) markAllRead();
+      else if (k === "/") {
+        e.preventDefault();
+        select({ kind: "search", q: "" });
+      } else return;
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    dialog,
+    mode.kind,
+    step,
+    selected,
+    toggleSave,
+    setRead,
+    refreshFeeds,
+    markAllRead,
+    select,
+  ]);
+
+  // ---------- sidebar & feed management ----------
+  const allFeeds = useMemo(
+    () =>
+      sidebar
+        ? [...sidebar.unfiled, ...sidebar.folders.flatMap((f) => f.feeds)]
+        : [],
+    [sidebar],
+  );
+
+  const moveFeed = async (feedId: number, folderId: number | null) => {
+    await api(`/api/feeds/${feedId}`, { method: "PATCH", json: { folderId } });
+    loadSidebar();
+  };
+
+  const feedMenu = (feed: SidebarFeed): MenuItem[] => [
+    {
+      label: "Mark as read",
+      icon: <Check size={14} />,
+      onSelect: () =>
+        api("/api/articles/mark-read", {
+          method: "POST",
+          json: { scope: "feed", id: feed.id },
+        }).then(reloadAll),
+    },
+    {
+      label: "Refresh",
+      icon: <RefreshCw size={14} />,
+      onSelect: () =>
+        api("/api/refresh", { method: "POST", json: { feedId: feed.id } }).then(
+          reloadAll,
+        ),
+    },
+    {
+      label: "Rename",
+      icon: <Pencil size={14} />,
+      onSelect: () => setDialog({ kind: "rename-feed", feed }),
+    },
+    {
+      label: "Filter articles…",
+      icon: <FilterIcon size={14} />,
+      onSelect: () =>
+        setMode({
+          kind: "automate",
+          section: "filters",
+          presetFeedId: feed.id,
+        }),
+    },
+    {
+      label: "Create rule…",
+      icon: <Zap size={14} />,
+      onSelect: () =>
+        setMode({ kind: "automate", section: "rules", presetFeedId: feed.id }),
+    },
+    { separator: true },
+    { heading: "Move to" },
+    ...(sidebar?.folders ?? [])
+      .filter((f) => f.id !== feed.folderId)
+      .map((f) => ({
+        label: f.name,
+        icon: <FolderInput size={14} />,
+        onSelect: () => moveFeed(feed.id, f.id),
+      })),
+    ...(feed.folderId !== null
+      ? [
+          {
+            label: "No folder",
+            icon: <FolderInput size={14} />,
+            onSelect: () => moveFeed(feed.id, null),
+          },
+        ]
+      : []),
+    {
+      label: "New folder…",
+      icon: <FolderInput size={14} />,
+      onSelect: () => setDialog({ kind: "new-folder", moveFeedId: feed.id }),
+    },
+    { separator: true },
+    {
+      label: "Unfollow",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: async () => {
+        if (
+          !(await confirmDialog({
+            title: "Unfollow feed?",
+            message: (
+              <>
+                “{feed.title}” and all of its articles, including saved ones,
+                will be deleted.
+              </>
+            ),
+            confirmLabel: "Unfollow",
+            danger: true,
+          }))
+        )
+          return;
+        await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
+        if (scope.kind === "feed" && scope.id === feed.id)
+          select({ kind: "all" });
+        reloadAll();
+      },
+    },
+  ];
+
+  const folderMenu = (folder: SidebarFolder): MenuItem[] => [
+    {
+      label: "Mark as read",
+      icon: <Check size={14} />,
+      onSelect: () =>
+        api("/api/articles/mark-read", {
+          method: "POST",
+          json: { scope: "folder", id: folder.id },
+        }).then(reloadAll),
+    },
+    {
+      label: "Rename",
+      icon: <Pencil size={14} />,
+      onSelect: () => setDialog({ kind: "rename-folder", folder }),
+    },
+    {
+      label: "Create rule…",
+      icon: <Zap size={14} />,
+      onSelect: () =>
+        setMode({
+          kind: "automate",
+          section: "rules",
+          presetFolderId: folder.id,
+        }),
+    },
+    {
+      label: "Delete folder",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: async () => {
+        if (
+          !(await confirmDialog({
+            title: "Delete folder?",
+            message: (
+              <>
+                “{folder.name}” will be removed. Its feeds are kept and moved
+                out of the folder.
+              </>
+            ),
+            confirmLabel: "Delete folder",
+            danger: true,
+          }))
+        )
+          return;
+        await api(`/api/folders/${folder.id}`, { method: "DELETE" });
+        if (scope.kind === "folder" && scope.id === folder.id)
+          select({ kind: "all" });
+        loadSidebar();
+      },
+    },
+  ];
+
+  const monitorMenu = (monitor: SidebarMonitor): MenuItem[] => [
+    {
+      label: "Mark as read",
+      icon: <Check size={14} />,
+      onSelect: () =>
+        api("/api/articles/mark-read", {
+          method: "POST",
+          json: { scope: "monitor", id: monitor.id },
+        }).then(reloadAll),
+    },
+    {
+      label: "Edit monitoring feed",
+      icon: <Pencil size={14} />,
+      onSelect: () =>
+        setMode({ kind: "add", tab: "monitor", monitorId: monitor.id }),
+    },
+    {
+      label: "Delete",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: async () => {
+        if (
+          !(await confirmDialog({
+            title: "Delete monitoring feed?",
+            message: (
+              <>
+                “{monitor.name}” will be removed from the sidebar. Articles are
+                not affected.
+              </>
+            ),
+            confirmLabel: "Delete",
+            danger: true,
+          }))
+        )
+          return;
+        await api(`/api/monitors/${monitor.id}`, { method: "DELETE" });
+        if (scope.kind === "monitor" && scope.id === monitor.id)
+          select({ kind: "all" });
+        loadSidebar();
+      },
+    },
+  ];
+
+  const toggleFolder = async (folder: SidebarFolder) => {
+    setSidebar(
+      (s) =>
+        s && {
+          ...s,
+          folders: s.folders.map((f) =>
+            f.id === folder.id ? { ...f, collapsed: !f.collapsed } : f,
+          ),
+        },
+    );
+    await api(`/api/folders/${folder.id}`, {
+      method: "PATCH",
+      json: { collapsed: !folder.collapsed },
+    });
+  };
+
+  const cycleTheme = () => {
+    const next: Theme =
+      theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+    setTheme(next);
+    applyTheme(next);
+    try {
+      if (next === "system") localStorage.removeItem("rivulet-theme");
+      else localStorage.setItem("rivulet-theme", next);
+    } catch {}
+  };
+
+  // ---------- list header ----------
+  const currentFeed =
+    scope.kind === "feed" ? allFeeds.find((f) => f.id === scope.id) : undefined;
+  const currentFolder =
+    scope.kind === "folder"
+      ? sidebar?.folders.find((f) => f.id === scope.id)
+      : undefined;
+  const currentMonitor =
+    scope.kind === "monitor"
+      ? sidebar?.monitors.find((m) => m.id === scope.id)
+      : undefined;
+  const title =
+    scope.kind === "all"
+      ? "All articles"
+      : scope.kind === "saved"
+        ? "Saved"
+        : scope.kind === "search"
+          ? "Search"
+          : (currentFeed?.title ??
+            currentFolder?.name ??
+            currentMonitor?.name ??
+            "…");
+  const titleMenu = currentFeed
+    ? feedMenu(currentFeed)
+    : currentFolder
+      ? folderMenu(currentFolder)
+      : currentMonitor
+        ? monitorMenu(currentMonitor)
+        : undefined;
+
+  const viewMenu: MenuItem[] = [
+    { heading: "Show" },
+    {
+      label: "Unread only",
+      checked: unreadOnly,
+      onSelect: () => setUnreadOnly(true),
+    },
+    {
+      label: "All articles",
+      checked: !unreadOnly,
+      onSelect: () => setUnreadOnly(false),
+    },
+    { heading: "Sort" },
+    {
+      label: "Newest first",
+      checked: !oldestFirst,
+      onSelect: () => setOldestFirst(false),
+    },
+    {
+      label: "Oldest first",
+      checked: oldestFirst,
+      icon: <ArrowDownUp size={14} />,
+      onSelect: () => setOldestFirst(true),
+    },
+    { heading: "Layout" },
+    {
+      label: "Titles",
+      checked: layout === "titles",
+      icon: <LayoutList size={14} />,
+      onSelect: () => setLayout("titles"),
+    },
+    {
+      label: "Magazine",
+      checked: layout === "magazine",
+      icon: <Newspaper size={14} />,
+      onSelect: () => setLayout("magazine"),
+    },
+    { separator: true },
+    {
+      label: "Refresh feeds",
+      icon: <RefreshCw size={14} />,
+      onSelect: refreshFeeds,
+    },
+  ];
+
+  const markMenu: MenuItem[] = [
+    { label: "Mark all as read", onSelect: () => markAllRead() },
+    { label: "Older than one day", onSelect: () => markAllRead(86400000) },
+    { label: "Older than one week", onSelect: () => markAllRead(7 * 86400000) },
+  ];
+
+  const view =
+    mode.kind === "settings"
+      ? "settings"
+      : mode.kind === "automate"
+        ? "automate"
+        : mode.kind === "add"
+          ? "add"
+          : scope.kind === "saved"
+            ? "saved"
+            : scope.kind === "search"
+              ? "search"
+              : "feeds";
+  const openAdd = (tab: AddTab = "feed") => {
+    setMode({ kind: "add", tab });
+    setNavOpen(false);
+  };
+  const noFeeds =
+    sidebar &&
+    !sidebar.unfiled.length &&
+    !sidebar.folders.some((f) => f.feeds.length);
+
+  /** Drag handler for a pane splitter; the width is clamped and persisted via the effect above. */
+  const startResize =
+    (startW: number, setW: (w: number) => void, min: number, max: number) =>
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const body = document.body.style;
+      body.userSelect = "none";
+      body.cursor = "col-resize";
+      const onMove = (ev: PointerEvent) =>
+        setW(Math.min(max, Math.max(min, startW + ev.clientX - startX)));
+      const onUp = () => {
+        body.userSelect = "";
+        body.cursor = "";
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+
+  const splitter = (
+    onPointerDown: (e: React.PointerEvent) => void,
+    onReset: () => void,
+  ) => (
+    <div
+      onPointerDown={onPointerDown}
+      onDoubleClick={onReset}
+      className="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center text-faint hover:bg-hover md:flex"
+      title="Drag to resize · double-click to reset"
+    >
+      ⋮
+    </div>
+  );
+
+  const rail = (
+    <Rail
+      view={view}
+      totalUnread={sidebar?.totalUnread ?? 0}
+      savedCount={sidebar?.savedCount ?? 0}
+      theme={theme}
+      sidebarCollapsed={sidebarCollapsed}
+      onFeeds={() =>
+        mode.kind !== "read"
+          ? (setMode({ kind: "read" }), setSidebarCollapsed(false))
+          : scope.kind === "saved" || scope.kind === "search"
+            ? select({ kind: "all" })
+            : setSidebarCollapsed((c) => !c)
+      }
+      onSaved={() => select({ kind: "saved" })}
+      onSearch={() => select({ kind: "search", q: "" })}
+      onAutomate={() => {
+        setMode({
+          kind: "automate",
+          section: mode.kind === "automate" ? mode.section : "rules",
+        });
+        setNavOpen(false);
+      }}
+      onAdd={() => openAdd()}
+      onSettings={() => {
+        setMode({
+          kind: "settings",
+          section: mode.kind === "settings" ? mode.section : "general",
+        });
+        setNavOpen(false);
+      }}
+      onTheme={cycleTheme}
+      onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
+    />
+  );
+  const sidebarPanel = (
+    <SidebarPanel
+      sidebar={sidebar}
+      scope={scope}
+      actions={{
+        select,
+        toggleFolder,
+        newFolder: () => setDialog({ kind: "new-folder" }),
+        refreshAll: refreshFeeds,
+        openSettings: () => setMode({ kind: "settings", section: "general" }),
+        feedMenu,
+        folderMenu,
+        monitorMenu,
+      }}
+    />
+  );
+  const addPanel =
+    mode.kind === "add" ? (
+      <AddPanel tab={mode.tab} onTab={(tab) => setMode({ kind: "add", tab })} />
+    ) : mode.kind === "automate" ? (
+      <AutomatePanel
+        section={mode.section}
+        onSection={(section) => setMode({ kind: "automate", section })}
+      />
+    ) : mode.kind === "settings" ? (
+      <SettingsPanel
+        section={mode.section}
+        onSection={(section) => setMode({ kind: "settings", section })}
+      />
+    ) : null;
+
+  const addContent =
+    mode.kind === "settings" ? (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <SettingsTabsMobile
+          section={mode.section}
+          onSection={(section) => setMode({ kind: "settings", section })}
+        />
+        <div className="min-h-0 flex-1">
+          <SettingsPage
+            section={mode.section}
+            settings={settings}
+            onSaved={setSettings}
+            onImported={() => loadSidebar()}
+          />
+        </div>
+      </div>
+    ) : mode.kind === "automate" ? (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AutomateTabsMobile
+          section={mode.section}
+          onSection={(section) => setMode({ kind: "automate", section })}
+        />
+        <div className="min-h-0 flex-1">
+          {mode.section === "rules" ? (
+            <RulesPage
+              key={`${mode.presetFeedId ?? ""}:${mode.presetFolderId ?? ""}`}
+              sidebar={sidebar}
+              preset={
+                mode.presetFeedId || mode.presetFolderId
+                  ? { feedId: mode.presetFeedId, folderId: mode.presetFolderId }
+                  : undefined
+              }
+            />
+          ) : (
+            <FiltersPage
+              key={mode.presetFeedId ?? "all"}
+              sidebar={sidebar}
+              presetFeedId={mode.presetFeedId}
+              onChanged={() => {
+                loadSidebar();
+                reloadList();
+              }}
+            />
+          )}
+        </div>
+      </div>
+    ) : mode.kind === "add" ? (
+      <div className="flex min-w-0 flex-1 flex-col bg-bg">
+        <AddTabsMobile
+          tab={mode.tab}
+          onTab={(tab) => setMode({ kind: "add", tab })}
+        />
+        <div className="min-h-0 flex-1">
+          {mode.tab === "feed" && (
+            <AddFeedPage
+              sidebar={sidebar}
+              defaultFolderId={scope.kind === "folder" ? scope.id : null}
+              onAdded={async (feedId) => {
+                await loadSidebar();
+                select({ kind: "feed", id: feedId });
+              }}
+            />
+          )}
+          {mode.tab === "monitor" && (
+            <MonitorEditor
+              key={mode.monitorId ?? "new"}
+              sidebar={sidebar}
+              monitorId={mode.monitorId}
+              onSaved={async (id) => {
+                await loadSidebar();
+                select({ kind: "monitor", id });
+                reloadList();
+              }}
+              onDeleted={async () => {
+                await loadSidebar();
+                select({ kind: "all" });
+              }}
+            />
+          )}
+          {mode.tab === "import" && (
+            <ImportPage onImported={() => loadSidebar()} />
+          )}
+        </div>
+      </div>
+    ) : null;
+
+  return (
+    <div className="flex h-full w-full overflow-hidden">
+      {/* Desktop: rail + sidebar */}
+      <div className="hidden md:flex">
+        {rail}
+        {!sidebarCollapsed && (
+          <>
+            <div
+              className="shrink-0 border-r border-line"
+              style={{ width: sidebarWidth }}
+            >
+              {addPanel || sidebarPanel}
+            </div>
+            {splitter(
+              startResize(sidebarWidth, setSidebarWidth, 200, 520),
+              () => setSidebarWidth(340),
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Mobile: slide-over nav */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-40 flex md:hidden"
+          onClick={() => setNavOpen(false)}
+        >
+          <div
+            className="flex h-full w-[min(380px,90vw)] shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {rail}
+            <div className="min-w-0 flex-1">{sidebarPanel}</div>
+          </div>
+          <div className="flex-1 bg-black/40" />
+        </div>
+      )}
+
+      {addContent ?? (
+        <>
+          <div
+            className="w-full shrink-0 border-r border-line md:w-[var(--list-w)]"
+            style={{ "--list-w": `${listWidth}px` } as React.CSSProperties}
+          >
+            <ArticleList
+              title={title}
+              titleMenu={titleMenu}
+              unread={scopeUnread}
+              items={items}
+              selectedId={selectedId}
+              loading={loading}
+              hasMore={hasMore}
+              unreadOnly={effectiveUnreadOnly}
+              layout={layout}
+              showFeed={scope.kind !== "feed"}
+              viewMenu={viewMenu}
+              markMenu={markMenu}
+              searchQuery={searchMode ? scope.q : null}
+              newCount={newCount}
+              onSearch={(q) => select({ kind: "search", q })}
+              onCloseSearch={() => select({ kind: "all" })}
+              onLoadMore={loadMore}
+              onSelect={open}
+              onToggleSave={toggleSave}
+              onToggleRead={(a) => setRead(a, !a.isRead)}
+              onMarkAllRead={() => markAllRead()}
+              onShowAll={() => setUnreadOnly(false)}
+              onReload={reloadAll}
+              onOpenNav={() => setNavOpen(true)}
+              emptyHint={
+                noFeeds ? (
+                  <div className="flex flex-col items-center gap-4">
+                    <p className="text-muted">
+                      You’re not following any feeds yet.
+                    </p>
+                    <button
+                      type="button"
+                      className={primaryButton}
+                      onClick={() => openAdd()}
+                    >
+                      Add your first feed
+                    </button>
+                  </div>
+                ) : scope.kind === "saved" ? (
+                  <p className="text-muted">
+                    Nothing saved yet. Use the bookmark icon to keep articles
+                    for later.
+                  </p>
+                ) : scope.kind === "monitor" ? (
+                  <p className="text-muted">
+                    No articles match this monitoring feed yet.
+                  </p>
+                ) : undefined
+              }
+            />
+          </div>
+
+          {splitter(startResize(listWidth, setListWidth, 280, 640), () =>
+            setListWidth(380),
+          )}
+
+          <main
+            className={`min-w-0 flex-1 ${selected ? "fixed inset-0 z-30 md:static" : "hidden md:block"}`}
+          >
+            {selected ? (
+              <ArticleView
+                key={selected.id}
+                item={selected}
+                settings={settings}
+                onToggleSave={() => toggleSave(selected)}
+                onToggleRead={() => setRead(selected, !selected.isRead)}
+                onPrev={() => step(-1)}
+                onNext={() => step(1)}
+                onBack={() => setSelectedId(null)}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-faint">
+                {items.length ? "Select an article to read it" : ""}
+              </div>
+            )}
+          </main>
+        </>
+      )}
+      <ConfirmHost />
+      {dialog?.kind === "rename-feed" && (
+        <PromptDialog
+          title="Rename feed"
+          label="Title"
+          initial={dialog.feed.title}
+          onClose={() => setDialog(null)}
+          onSubmit={async (v) => {
+            await api(`/api/feeds/${dialog.feed.id}`, {
+              method: "PATCH",
+              json: { title: v },
+            });
+            setDialog(null);
+            reloadAll();
+          }}
+        />
+      )}
+      {dialog?.kind === "rename-folder" && (
+        <PromptDialog
+          title="Rename folder"
+          label="Name"
+          initial={dialog.folder.name}
+          onClose={() => setDialog(null)}
+          onSubmit={async (v) => {
+            await api(`/api/folders/${dialog.folder.id}`, {
+              method: "PATCH",
+              json: { name: v },
+            });
+            setDialog(null);
+            loadSidebar();
+          }}
+        />
+      )}
+      {dialog?.kind === "new-folder" && (
+        <PromptDialog
+          title="New folder"
+          label="Name"
+          initial=""
+          confirmLabel="Create"
+          onClose={() => setDialog(null)}
+          onSubmit={async (v) => {
+            const { id } = await api<{ id: number }>("/api/folders", {
+              method: "POST",
+              json: { name: v },
+            });
+            if (dialog.moveFeedId)
+              await api(`/api/feeds/${dialog.moveFeedId}`, {
+                method: "PATCH",
+                json: { folderId: id },
+              });
+            setDialog(null);
+            loadSidebar();
+          }}
+        />
+      )}
+    </div>
+  );
+}
