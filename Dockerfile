@@ -1,22 +1,22 @@
 # syntax=docker/dockerfile:1
 
-# ---- deps: install node_modules (better-sqlite3 ships a prebuilt binary for linux x64;
-# the build tools are only a fallback for platforms without one) ----
+# ---- deps: install node_modules. .npmrc sets ignore-scripts, so better-sqlite3 uses its bundled
+# prebuilt binary instead of compiling (no C++ toolchain needed) ----
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-COPY package.json package-lock.json ./
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 # ---- build: produce .next/standalone ----
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+# public/ may be empty, and git doesn't track empty folders, so make sure it exists.
+RUN mkdir -p public && npm run build
 
 # ---- runtime: only the standalone server, static assets and public files ----
 FROM node:24-bookworm-slim AS runtime
