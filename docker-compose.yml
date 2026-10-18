@@ -1,8 +1,6 @@
 services:
   rivulet:
     image: ghcr.io/wardboumans/rivulet:latest
-    # Or build from this checkout instead of pulling: `docker compose up --build`
-    build: .
     container_name: rivulet
     restart: unless-stopped
     ports:
@@ -10,10 +8,27 @@ services:
     volumes:
       # The SQLite database (feeds, articles, settings, saved API keys) is kept on the host in ./data.
       - ./data:/data
-    # Optional: APP_PASSWORD, and API keys if you prefer them over Settings. See .env.example.
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_PATH: /data/reader.db
       TZ: Europe/Amsterdam
+
+      # Everything below is optional; uncomment what you need.
+
+      # Require a password to use the app (recommended if it's reachable from the internet).
+      # APP_PASSWORD: change-me
+
+      # API keys are easiest to add in the app under Settings; a key saved there wins over these.
+      # Summaries: get a key at https://openrouter.ai/keys
+      # OPENROUTER_API_KEY: sk-or-...
+      # OPENROUTER_MODEL: openrouter/auto
+
+      # Automations, email action. SENDGRID_FROM must be a verified sender in SendGrid.
+      # SENDGRID_API_KEY: SG....
+      # SENDGRID_FROM: rivulet@example.com
+
+      # Automations, push action. App token from https://pushover.net/apps/build, user key from your dashboard.
+      # PUSHOVER_APP_TOKEN: ...
+      # PUSHOVER_USER_KEY: ...
+
+      # Set to 1 to turn off the background feed refresh.
+      # DISABLE_SCHEDULER: "1"

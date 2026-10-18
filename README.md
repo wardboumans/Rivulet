@@ -1,23 +1,24 @@
 # Rivulet
 
-A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.js 16 and SQLite (better-sqlite3).
+A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.js 16 and SQLite.
+
+![Rivulet: feeds and folders in the sidebar, the article list, and the reader](screenshot.png)
 
 ## Features
 
-- Feeds and folders, with unread counts and a three-pane layout (sidebar → article list → reader)
-- Read state: an article is marked read when you open it. Mark everything in a section read, or only items older than a day or a week
-- Saved for later
-- Full-text search across all articles (SQLite FTS5)
-- Full article fetch (Mozilla Readability) when a feed only provides a teaser, either automatically or with the toolbar button
-- AI summaries through OpenRouter, streamed and cached per article
-- OPML import and export
-- Monitoring feeds: saved keyword queries (OR within a row, AND across rows, NOT to exclude, optional title-only) that act like feeds
-- Automations: "new article in feed" rules with conditions (title, content, author or URL; contains, does not contain, is exactly, or regex; And/Or; whole words) that send an email (SendGrid) or a push notification (Pushover). Rules skip a feed's first fetch, so adding or importing feeds never sends its backlog, and matches from one refresh are batched
-- Filters: per feed, folder or everything, either remove matching articles or keep only matching ones, using the same conditions as rules. Filtered articles are hidden (not deleted) from lists, counts, search, monitoring feeds and rules; saved articles are never hidden, and editing or disabling a filter brings articles back. Filters apply to new articles and to the most recent 10,000 from the past 30 days
-- Background refresh: polls every N minutes, uses conditional GET (ETag / Last-Modified), and removes old read articles
-- Light, dark, or follow the system theme. Works on desktop and mobile
-- Keyboard shortcuts: `j`/`k` next/previous, `s` save, `m` toggle read, `v` open original, `f` full article, `r` refresh, `/` search, `Shift+A` mark all read
-- Optional password gate via `APP_PASSWORD`
+- **Feeds and folders** with unread counts, in a three-pane layout
+- **Full article** fetch (Readability) for feeds that only send a teaser (works on most, not all, websites)
+- **AI summaries** via OpenRouter, cached per article
+- **Saved for later** and **full-text search**
+- **Monitoring feeds**: saved keyword searches that act like feeds
+- **Automations**: email (SendGrid) or push (Pushover) when a new article matches your conditions
+- **Filters**: hide matching articles, or keep only matching ones, per feed or folder
+- **Read state**: marked read on open; mark a whole section read, or only older items
+- **OPML** import and export
+- **Background refresh** with conditional GET and automatic cleanup of old read articles
+- **Light and dark themes**, on desktop and mobile
+- **Keyboard shortcuts** (`j`/`k`, `s`, `m`, `/` and more)
+- **Optional password**
 
 ## Running
 
@@ -35,6 +36,36 @@ npm start
 ```
 
 The database is created at `data/reader.db` (override with `DATABASE_PATH`). Back up that file to keep your feeds, read state and saved articles.
+
+## Docker
+
+Images are published to `ghcr.io/wardboumans/rivulet`:
+
+| Tag             | Built from                     |
+| --------------- | ------------------------------ |
+| `latest`        | `main` and every release       |
+| `1.0.0`, …      | release tags                   |
+| `develop`       | the `develop` branch           |
+| `<short-sha>`   | a specific `develop` commit    |
+
+To try it out (nothing is kept when you stop it):
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/wardboumans/rivulet:latest
+```
+
+Or with plain Docker:
+
+```bash
+docker run -d --name rivulet --restart unless-stopped \
+  -p 3000:3000 \
+  -v ./data:/data \
+  ghcr.io/wardboumans/rivulet:latest
+```
+
+The database lives in `/data` inside the container, so mount a volume there (`./data` on the host above) or you lose your feeds when the container is replaced. API keys can be set as environment variables or added later under **Settings**.
+
+To update: `docker compose pull && docker compose up -d`. To build the image from this checkout instead: `docker build -t rivulet .`
 
 ## Configuration
 
@@ -54,13 +85,11 @@ Environment variables still work as a fallback for those keys, and are the only 
 | `DATABASE_PATH`      | SQLite file location                                                 |
 | `DISABLE_SCHEDULER`  | `1` turns off background refresh                                     |
 
-The refresh interval, how long read articles are kept, the automatic full-text toggle and the model are all set in the in-app Settings dialog.
-
 ## Layout
 
 ```
 src/
-  app/api/…        route handlers (articles, feeds, folders, opml, refresh, settings, login)
+  app/api/…        route handlers (articles, feeds, folders, monitors, rules, filters, opml, refresh, settings, login)
   components/      client UI (AppShell holds state; Rail, SidebarPanel, ArticleList, ArticleView, Dialogs)
   lib/db.ts        schema + connection singleton
   lib/feeds.ts     discovery, parsing, refresh, retention
