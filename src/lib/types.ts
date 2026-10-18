@@ -37,6 +37,12 @@ export type SidebarFeed = {
 
 export type SidebarFolder = { id: number; name: string; collapsed: boolean; unread: number; feeds: SidebarFeed[] };
 
+/** Rules and filters that target a feed or folder; they are deleted along with it. */
+export type LinkedAutomations = { rules: { id: number; name: string }[]; filters: number };
+
+/** What deleting a folder removes: its own rules and filters, and (if its feeds go too) theirs. */
+export type FolderAutomations = { folder: LinkedAutomations; feeds: LinkedAutomations };
+
 export type Sidebar = {
   monitors: SidebarMonitor[];
   folders: SidebarFolder[];

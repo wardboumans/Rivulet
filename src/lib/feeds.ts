@@ -4,9 +4,10 @@ import { getDb } from "./db";
 import { fetchText } from "./http";
 import { firstImage, htmlToText, sanitizeHtml } from "./html";
 import { purgeRuleMatches, runRulesForNewArticles } from "./automations";
-import { applyFiltersToArticles } from "./filters";
+import { applyFiltersToArticles, reapplyFilters } from "./filters";
 import { indexArticle } from "./search";
 import { getSettings } from "./settings";
+import type { FolderAutomations, LinkedAutomations } from "./types";
 
 type MediaAttr = { $?: { url?: string; medium?: string; type?: string } };
 type Item = Parser.Item & {
@@ -319,6 +320,67 @@ export function refreshAll(): Promise<number> {
 
 export function isRefreshing() {
   return !!g.__refreshing;
+}
+
+// Rules and filters keep their target feed or folder inside the JSON definition, so no foreign key
+// removes them with it (and ids can be reused, which would attach them to a new feed or folder).
+type Target = "feedId" | "folderId";
+const inList = (ids: number[]) => `IN (${ids.map(() => "?").join(",")})`;
+const rulesFor = (t: Target, ids: number[]) => `FROM rules WHERE json_extract(definition, '$.trigger.${t}') ${inList(ids)}`;
+const filtersFor = (t: Target, ids: number[]) => `FROM filters WHERE json_extract(definition, '$.target.${t}') ${inList(ids)}`;
+
+function linkedAutomations(t: Target, ids: number[]): LinkedAutomations {
+  if (!ids.length) return { rules: [], filters: 0 };
+  const db = getDb();
+  return {
+    rules: db.prepare(`SELECT id, name ${rulesFor(t, ids)} ORDER BY position, id`).all(...ids) as LinkedAutomations["rules"],
+    filters: (db.prepare(`SELECT COUNT(*) AS n ${filtersFor(t, ids)}`).get(...ids) as { n: number }).n,
+  };
+}
+
+function deleteLinkedAutomations(t: Target, ids: number[]) {
+  if (!ids.length) return;
+  const db = getDb();
+  db.prepare(`DELETE ${rulesFor(t, ids)}`).run(...ids);
+  db.prepare(`DELETE ${filtersFor(t, ids)}`).run(...ids);
+}
+
+const folderFeedIds = (folderId: number) =>
+  (getDb().prepare("SELECT id FROM feeds WHERE folder_id = ?").all(folderId) as { id: number }[]).map((r) => r.id);
+
+export function feedAutomations(feedId: number): LinkedAutomations {
+  return linkedAutomations("feedId", [feedId]);
+}
+
+export function folderAutomations(folderId: number): FolderAutomations {
+  return { folder: linkedAutomations("folderId", [folderId]), feeds: linkedAutomations("feedId", folderFeedIds(folderId)) };
+}
+
+/** Unfollow a feed: deletes it with its articles and the rules and filters that target it. */
+export function deleteFeed(feedId: number) {
+  const db = getDb();
+  db.transaction(() => {
+    deleteLinkedAutomations("feedId", [feedId]);
+    db.prepare("DELETE FROM feeds WHERE id = ?").run(feedId);
+  })();
+}
+
+/**
+ * Delete a folder and the rules and filters that target it. Its feeds either move to the top level
+ * or are deleted too (with their articles, rules and filters).
+ */
+export function deleteFolder(folderId: number, deleteFeeds: boolean) {
+  const db = getDb();
+  db.transaction(() => {
+    deleteLinkedAutomations("folderId", [folderId]);
+    if (deleteFeeds) {
+      deleteLinkedAutomations("feedId", folderFeedIds(folderId));
+      db.prepare("DELETE FROM feeds WHERE folder_id = ?").run(folderId);
+    }
+    db.prepare("DELETE FROM folders WHERE id = ?").run(folderId);
+  })();
+  // A removed folder filter may have been the only thing hiding articles in the kept feeds.
+  reapplyFilters();
 }
 
 /** Publish-date cutoff for retention, or null when articles are kept forever. */

@@ -72,6 +72,37 @@ export function IconButton({
   );
 }
 
+/**
+ * A link to another view of the app (e.g. /settings/ai). AppShell owns the view and reads it
+ * from the URL on popstate, so a plain click pushes the URL and fires popstate instead of going
+ * through the Next router (which would only change the URL). Modified clicks open normally.
+ */
+export function AppLink({
+  href,
+  className,
+  children,
+}: {
+  href: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      className={className}
+      onClick={(e) => {
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+          return;
+        e.preventDefault();
+        window.history.pushState(null, "", href);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 export type MenuItem =
   | {
       label: string;

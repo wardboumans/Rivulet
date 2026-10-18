@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -36,6 +35,7 @@ import type {
 } from "@/lib/types";
 import { confirmDialog } from "./ConfirmDialog";
 import {
+  AppLink,
   EmptyState,
   Menu,
   inputClass,
@@ -480,12 +480,12 @@ export function RulesPage({
                 ? "Email isn’t set up yet."
                 : "Push notifications aren’t set up yet."}{" "}
             Add your SendGrid and Pushover keys in{" "}
-            <Link
+            <AppLink
               href="/settings/notifications"
               className="text-accent underline"
             >
               Settings → Notifications
-            </Link>
+            </AppLink>
             .
           </p>
         )}
@@ -786,17 +786,17 @@ function RuleEditor({
     a.type === "email" && !providers.email ? (
       <p className="text-xs text-danger">
         SendGrid isn’t set up yet:{" "}
-        <Link href="/settings/notifications" className="underline">
+        <AppLink href="/settings/notifications" className="underline">
           add an API key and sender address in Settings
-        </Link>
+        </AppLink>
         .
       </p>
     ) : a.type === "pushover" && !providers.pushover ? (
       <p className="text-xs text-danger">
         Pushover isn’t set up yet:{" "}
-        <Link href="/settings/notifications" className="underline">
+        <AppLink href="/settings/notifications" className="underline">
           add an app token and user key in Settings
-        </Link>
+        </AppLink>
         .
       </p>
     ) : null;

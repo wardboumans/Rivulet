@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
@@ -21,7 +20,7 @@ import {
 } from "lucide-react";
 import { api, hostname, timeAgo } from "@/lib/client";
 import type { AppSettings, ArticleDetail, ArticleListItem } from "@/lib/types";
-import { IconButton, Menu } from "./ui";
+import { AppLink, IconButton, Menu } from "./ui";
 
 /** Render the model's markdown bullets as React nodes (no raw HTML from the LLM reaches the DOM). */
 function SummaryText({ text }: { text: string }) {
@@ -370,9 +369,9 @@ export function ArticleView({
               <Sparkles size={16} className="mt-0.5 shrink-0 text-accent" />
               <span>
                 Summaries need an OpenRouter API key. Add one in{" "}
-                <Link href="/settings/ai" className="text-accent underline">
+                <AppLink href="/settings/ai" className="text-accent underline">
                   Settings → AI summaries
-                </Link>
+                </AppLink>
                 .
               </span>
             </p>

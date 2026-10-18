@@ -1,5 +1,13 @@
 import { body, error, intParam, json } from "@/lib/api";
 import { getDb } from "@/lib/db";
+import { deleteFolder, folderAutomations } from "@/lib/feeds";
+
+/** The rules and filters that would be deleted with this folder (for the delete dialog). */
+export async function GET(_req: Request, ctx: RouteContext<"/api/folders/[id]">) {
+  const id = intParam((await ctx.params).id);
+  if (!id) return error("Invalid id");
+  return json(folderAutomations(id));
+}
 
 export async function PATCH(req: Request, ctx: RouteContext<"/api/folders/[id]">) {
   const id = intParam((await ctx.params).id);
@@ -11,10 +19,10 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/folders/[id]">
   return json({ ok: true });
 }
 
-/** Deleting a folder keeps its feeds; they move to the top level (ON DELETE SET NULL). */
-export async function DELETE(_req: Request, ctx: RouteContext<"/api/folders/[id]">) {
+/** `?feeds=delete` deletes the folder's feeds too; otherwise they move to the top level. */
+export async function DELETE(req: Request, ctx: RouteContext<"/api/folders/[id]">) {
   const id = intParam((await ctx.params).id);
   if (!id) return error("Invalid id");
-  getDb().prepare("DELETE FROM folders WHERE id = ?").run(id);
+  deleteFolder(id, new URL(req.url).searchParams.get("feeds") === "delete");
   return json({ ok: true });
 }

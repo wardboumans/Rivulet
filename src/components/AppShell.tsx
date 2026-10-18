@@ -19,6 +19,7 @@ import {
   type AppSettings,
   type ArticleListItem,
   type ArticlePage,
+  type LinkedAutomations,
   type Scope,
   type Sidebar,
   type SidebarFeed,
@@ -42,7 +43,11 @@ import {
 } from "./Automations";
 import { FiltersPage } from "./Filters";
 import { ArticleView } from "./ArticleView";
-import { PromptDialog } from "./Dialogs";
+import {
+  DeleteFolderDialog,
+  PromptDialog,
+  describeAutomations,
+} from "./Dialogs";
 import {
   SETTINGS_SECTIONS,
   SettingsPage,
@@ -74,6 +79,7 @@ type DialogState =
   | null
   | { kind: "rename-feed"; feed: SidebarFeed }
   | { kind: "rename-folder"; folder: SidebarFolder }
+  | { kind: "delete-folder"; folder: SidebarFolder }
   | { kind: "new-folder"; moveFeedId?: number };
 
 function scopeFromLocation(): Scope {
@@ -574,6 +580,39 @@ export function AppShell() {
       onSelect: () =>
         setMode({ kind: "automate", section: "rules", presetFeedId: feed.id }),
     },
+    {
+      label: "Unfollow",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: async () => {
+        const lost = describeAutomations(
+          await api<LinkedAutomations>(`/api/feeds/${feed.id}`),
+        );
+        if (
+          !(await confirmDialog({
+            title: "Unfollow feed?",
+            message: (
+              <>
+                “{feed.title}” and all of its articles, including saved ones,
+                will be deleted.
+                {lost && (
+                  <span className="mt-3 block text-danger">
+                    {lost} for this feed will also be deleted.
+                  </span>
+                )}
+              </>
+            ),
+            confirmLabel: "Unfollow",
+            danger: true,
+          }))
+        )
+          return;
+        await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
+        if (scope.kind === "feed" && scope.id === feed.id)
+          select({ kind: "all" });
+        reloadAll();
+      },
+    },
     { separator: true },
     { heading: "Move to" },
     ...(sidebar?.folders ?? [])
@@ -596,32 +635,6 @@ export function AppShell() {
       label: "New folder…",
       icon: <FolderInput size={14} />,
       onSelect: () => setDialog({ kind: "new-folder", moveFeedId: feed.id }),
-    },
-    { separator: true },
-    {
-      label: "Unfollow",
-      icon: <Trash2 size={14} />,
-      danger: true,
-      onSelect: async () => {
-        if (
-          !(await confirmDialog({
-            title: "Unfollow feed?",
-            message: (
-              <>
-                “{feed.title}” and all of its articles, including saved ones,
-                will be deleted.
-              </>
-            ),
-            confirmLabel: "Unfollow",
-            danger: true,
-          }))
-        )
-          return;
-        await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
-        if (scope.kind === "feed" && scope.id === feed.id)
-          select({ kind: "all" });
-        reloadAll();
-      },
     },
   ];
 
@@ -654,26 +667,7 @@ export function AppShell() {
       label: "Delete folder",
       icon: <Trash2 size={14} />,
       danger: true,
-      onSelect: async () => {
-        if (
-          !(await confirmDialog({
-            title: "Delete folder?",
-            message: (
-              <>
-                “{folder.name}” will be removed. Its feeds are kept and moved
-                out of the folder.
-              </>
-            ),
-            confirmLabel: "Delete folder",
-            danger: true,
-          }))
-        )
-          return;
-        await api(`/api/folders/${folder.id}`, { method: "DELETE" });
-        if (scope.kind === "folder" && scope.id === folder.id)
-          select({ kind: "all" });
-        loadSidebar();
-      },
+      onSelect: () => setDialog({ kind: "delete-folder", folder }),
     },
   ];
 
@@ -1189,6 +1183,24 @@ export function AppShell() {
             });
             setDialog(null);
             loadSidebar();
+          }}
+        />
+      )}
+      {dialog?.kind === "delete-folder" && (
+        <DeleteFolderDialog
+          folder={dialog.folder}
+          onClose={() => setDialog(null)}
+          onDeleted={() => {
+            const { folder } = dialog;
+            setDialog(null);
+            // Leave the folder's view, or one of its feeds' (they may have been deleted).
+            if (
+              (scope.kind === "folder" && scope.id === folder.id) ||
+              (scope.kind === "feed" &&
+                folder.feeds.some((f) => f.id === scope.id))
+            )
+              select({ kind: "all" });
+            reloadAll();
           }}
         />
       )}

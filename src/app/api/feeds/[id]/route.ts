@@ -1,5 +1,13 @@
 import { body, error, intParam, json } from "@/lib/api";
 import { getDb } from "@/lib/db";
+import { deleteFeed, feedAutomations } from "@/lib/feeds";
+
+/** The rules and filters that would be deleted with this feed (for the unfollow confirmation). */
+export async function GET(_req: Request, ctx: RouteContext<"/api/feeds/[id]">) {
+  const id = intParam((await ctx.params).id);
+  if (!id) return error("Invalid id");
+  return json(feedAutomations(id));
+}
 
 export async function PATCH(req: Request, ctx: RouteContext<"/api/feeds/[id]">) {
   const id = intParam((await ctx.params).id);
@@ -14,6 +22,6 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/feeds/[id]">) 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/feeds/[id]">) {
   const id = intParam((await ctx.params).id);
   if (!id) return error("Invalid id");
-  getDb().prepare("DELETE FROM feeds WHERE id = ?").run(id);
+  deleteFeed(id);
   return json({ ok: true });
 }
