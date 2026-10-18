@@ -2,6 +2,7 @@ name: Docker image
 
 # Builds the image on every push and PR; pushes it to GitHub Container Registry
 # (ghcr.io/<owner>/<repo>) for branch pushes, version tags and manual runs.
+# Release: merge to main, then tag the main commit (`git tag v1.2.3 && git push origin v1.2.3`).
 on:
   push:
     branches: [develop, main]
@@ -33,26 +34,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tags: branch name, pr-N, short sha, semver for v* tags, and `latest` on the default branch.
+      # `latest` must only ever point at main, so a release tag has to be on main.
+      - name: Check the tag is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/${{ github.repository }}/compare/main...${{ github.sha }}" --jq .status)
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::Tag ${{ github.ref_name }} is not on main ($status); release tags must point at a main commit."
+            exit 1
+          fi
+
+      # develop -> `develop` + short sha; main -> `latest`; v* tag (on main) -> the tag + `latest`.
+      # PRs are built (tagged pr-N) but not pushed.
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
-            type=ref,event=branch
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=sha,prefix=,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+            type=ref,event=tag
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && steps.meta.outputs.tags != '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
