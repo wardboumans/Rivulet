@@ -1,12 +1,12 @@
 name: Docker image
 
 # Builds the image on every push and PR; pushes it to GitHub Container Registry
-# (ghcr.io/<owner>/<repo>) for branch pushes, version tags and manual runs.
-# Release: merge to main, then tag the main commit (`git tag v1.2.3 && git push origin v1.2.3`).
+# (ghcr.io/<owner>/<repo>) for branch pushes, git tags and manual runs.
+# Release: merge to main, then tag the main commit (`git tag 1.2.3 && git push origin 1.2.3`).
 on:
   push:
     branches: [develop, main]
-    tags: ["v*"]
+    tags: ["*"]
   pull_request:
   workflow_dispatch:
 
@@ -46,7 +46,7 @@ jobs:
             exit 1
           fi
 
-      # develop -> `develop` + short sha; main -> `latest`; v* tag (on main) -> the tag + `latest`.
+      # develop -> `develop` + short sha; main -> `latest`; git tag (on main) -> the tag + `latest`.
       # PRs are built (tagged pr-N) but not pushed.
       - name: Image metadata
         id: meta
