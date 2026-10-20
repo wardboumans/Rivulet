@@ -171,7 +171,8 @@ export function Menu({
       {open && (
         <div
           role="menu"
-          className={`absolute top-full z-50 mt-1 min-w-52 rounded-lg border border-line bg-elevated py-1 shadow-pop ${
+          // Reset type styles: the menu renders inside its trigger's row (e.g. a bold sidebar row).
+          className={`absolute top-full z-50 mt-1 min-w-52 rounded-lg border border-line bg-elevated py-1 text-left text-sm font-normal leading-normal shadow-pop ${
             align === "right" ? "right-0" : "left-0"
           }`}
         >
