@@ -22,7 +22,10 @@ export type YouTubeSource = { kind: "channel" | "playlist"; feedUrl: string; ico
 
 async function page(url: string) {
   const res = await fetchText(url, { accept: "text/html", headers: PAGE_HEADERS, timeoutMs: 15000 });
-  if (res.status === 404) throw new Error("YouTube says that channel or playlist doesn't exist");
+  if (res.status === 404)
+    throw new Error(
+      "YouTube doesn't show a channel or playlist at that address (the handle may be wrong, or the channel private or removed). If it opens for you on YouTube, paste its channel ID (UC…) instead.",
+    );
   if (res.status >= 400) throw new Error(`YouTube returned HTTP ${res.status}`);
   return res.text;
 }
