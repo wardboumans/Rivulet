@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { compactCount } from "@/lib/client";
+import { Logo } from "./ui";
 
 export type Theme = "system" | "light" | "dark";
 
@@ -89,17 +90,7 @@ export function Rail({
         className="mb-3 flex h-9 w-9 items-center justify-center"
         aria-label="Rivulet"
       >
-        <svg viewBox="0 0 32 32" className="h-8 w-8" aria-hidden>
-          <circle cx="16" cy="16" r="15" fill="#fff" />
-          <path
-            d="M9 21c4-1 6-4 8-7s4-5 7-6"
-            fill="none"
-            stroke="#3d3b39"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
-          <circle cx="10" cy="22" r="2.2" fill="#229e8c" />
-        </svg>
+        <Logo className="h-9 w-9" />
       </div>
       <RailButton
         label="Feeds"

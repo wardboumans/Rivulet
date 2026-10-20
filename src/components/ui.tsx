@@ -1,7 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Rss } from "lucide-react";
+
+/** The Rivulet mark (same artwork as app/icon.svg): a light stream bending around a pebble. */
+export function Logo({ className }: { className?: string }) {
+  const clip = useId();
+  return (
+    <svg viewBox="0 0 64 64" className={className} aria-hidden>
+      <defs>
+        <clipPath id={clip}>
+          <rect width="64" height="64" rx="15" />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clip})`}>
+        <rect width="64" height="64" fill="#229e8c" />
+        <path d="M-1 18A47 47 0 0 1 46 65H30A31 31 0 0 0-1 34Z" fill="#e8f8f4" />
+        <path d="M-1 0H22A42 42 0 0 1 65 42V65H52A53 53 0 0 0-1 12Z" fill="#0e5a51" />
+        <circle cx="13" cy="51" r="8" fill="#7fd8c8" />
+      </g>
+    </svg>
+  );
+}
 
 export function FeedIcon({
   src,
