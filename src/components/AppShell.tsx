@@ -26,6 +26,7 @@ import {
   type SidebarFolder,
   type SidebarMonitor,
   type NewArticlesCheck,
+  type Tag,
 } from "@/lib/types";
 import {
   AddFeedPage,
@@ -45,6 +46,7 @@ import { FiltersPage } from "./Filters";
 import { ArticleView } from "./ArticleView";
 import {
   DeleteFolderDialog,
+  FolderPropertiesDialog,
   PromptDialog,
   describeAutomations,
 } from "./Dialogs";
@@ -57,7 +59,8 @@ import {
 } from "./SettingsPage";
 import { MonitorEditor } from "./MonitorEditor";
 import { Rail, type Theme } from "./Rail";
-import { SidebarPanel } from "./SidebarPanel";
+import { SavedPanel, SidebarPanel } from "./SidebarPanel";
+import { ManageTagsDialog, TagDialog } from "./Tags";
 import { ConfirmHost, confirmDialog } from "./ConfirmDialog";
 import type { MenuItem } from "./ui";
 import { primaryButton } from "./ui";
@@ -78,17 +81,27 @@ type Mode =
 type DialogState =
   | null
   | { kind: "rename-feed"; feed: SidebarFeed }
-  | { kind: "rename-folder"; folder: SidebarFolder }
+  | { kind: "folder-properties"; folder: SidebarFolder }
   | { kind: "delete-folder"; folder: SidebarFolder }
-  | { kind: "new-folder"; moveFeedId?: number };
+  | { kind: "new-folder"; moveFeedId?: number }
+  | { kind: "tag"; tag?: Tag }
+  | { kind: "manage-tags" };
+
+/** Scopes shown in the Saved section (the Saved panel replaces the feed sidebar for these). */
+const SAVED_KINDS: Scope["kind"][] = ["saved", "archive", "tagged", "tag"];
 
 function scopeFromLocation(): Scope {
   const p = new URLSearchParams(window.location.search);
-  const id = Number(p.get("feed") ?? p.get("folder") ?? p.get("monitor"));
+  const id = Number(
+    p.get("feed") ?? p.get("folder") ?? p.get("monitor") ?? p.get("tag"),
+  );
   if (p.has("feed") && id) return { kind: "feed", id };
   if (p.has("folder") && id) return { kind: "folder", id };
   if (p.has("monitor") && id) return { kind: "monitor", id };
+  if (p.has("tag") && id) return { kind: "tag", id };
   if (p.has("saved")) return { kind: "saved" };
+  if (p.has("archive")) return { kind: "archive" };
+  if (p.has("tagged")) return { kind: "tagged" };
   if (p.has("q")) return { kind: "search", q: p.get("q") ?? "" };
   return { kind: "all" };
 }
@@ -99,6 +112,12 @@ function scopeToLocation(scope: Scope): string {
       return "/";
     case "saved":
       return "/?saved";
+    case "archive":
+      return "/?archive";
+    case "tagged":
+      return "/?tagged";
+    case "tag":
+      return `/?tag=${scope.id}`;
     case "feed":
       return `/?feed=${scope.id}`;
     case "folder":
@@ -163,9 +182,9 @@ export function AppShell() {
   const [mode, setModeState] = useState<Mode>(modeFromLocation);
 
   const searchMode = scope.kind === "search";
+  const savedView = SAVED_KINDS.includes(scope.kind);
   // Saved and search views list everything; "unread only" applies to feed views.
-  const effectiveUnreadOnly =
-    unreadOnly && scope.kind !== "saved" && !searchMode;
+  const effectiveUnreadOnly = unreadOnly && !savedView && !searchMode;
 
   // The list belongs to one query; when the query changes, the stale list is simply ignored
   // until the new one arrives (no reset-in-effect needed).
@@ -426,6 +445,20 @@ export function AppShell() {
     [loadSidebar],
   );
 
+  /** Archiving also takes the article out of Read later (see setArticleState). */
+  const toggleArchive = useCallback(
+    async (a: ArticleListItem) => {
+      const isArchived = !a.isArchived;
+      patchItem(a.id, isArchived ? { isArchived, isSaved: false } : { isArchived });
+      await api(`/api/articles/${a.id}`, {
+        method: "PATCH",
+        json: { isArchived },
+      });
+      loadSidebar();
+    },
+    [loadSidebar],
+  );
+
   const open = useCallback(
     (a: ArticleListItem) => {
       setSelectedId(a.id);
@@ -503,6 +536,7 @@ export function AppShell() {
       if (k === "j" || k === "n") step(1);
       else if (k === "k" || k === "p") step(-1);
       else if (k === "s" && selected) toggleSave(selected);
+      else if (k === "e" && selected) toggleArchive(selected);
       else if (k === "m" && selected) setRead(selected, !selected.isRead);
       else if (k === "v" && selected?.url)
         window.open(selected.url, "_blank", "noopener");
@@ -521,6 +555,7 @@ export function AppShell() {
     step,
     selected,
     toggleSave,
+    toggleArchive,
     setRead,
     refreshFeeds,
     markAllRead,
@@ -593,8 +628,8 @@ export function AppShell() {
             title: "Unfollow feed?",
             message: (
               <>
-                “{feed.title}” and all of its articles, including saved ones,
-                will be deleted.
+                “{feed.title}” and all of its articles, including saved,
+                archived and tagged ones, will be deleted.
                 {lost && (
                   <span className="mt-3 block text-danger">
                     {lost} for this feed will also be deleted.
@@ -649,9 +684,9 @@ export function AppShell() {
         }).then(reloadAll),
     },
     {
-      label: "Rename",
+      label: "Folder properties…",
       icon: <Pencil size={14} />,
-      onSelect: () => setDialog({ kind: "rename-folder", folder }),
+      onSelect: () => setDialog({ kind: "folder-properties", folder }),
     },
     {
       label: "Create rule…",
@@ -714,6 +749,61 @@ export function AppShell() {
     },
   ];
 
+  const deleteTag = async (tag: Tag) => {
+    const { rules } = await api<{ rules: { id: number; name: string }[] }>(
+      `/api/tags/${tag.id}`,
+    );
+    if (
+      !(await confirmDialog({
+        title: "Delete tag?",
+        message: (
+          <>
+            “{tag.name}” will be removed from{" "}
+            {tag.count === 1 ? "1 article" : `${tag.count} articles`}. The
+            articles themselves are kept.
+            {rules.length > 0 && (
+              <span className="mt-3 block text-danger">
+                {rules.length === 1 ? "The rule" : "The rules"}{" "}
+                {rules.map((r) => `“${r.name}”`).join(", ")} will stop
+                assigning it; a rule left with no actions is disabled.
+              </span>
+            )}
+          </>
+        ),
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
+    await api(`/api/tags/${tag.id}`, { method: "DELETE" });
+    setDialog((d) => (d?.kind === "tag" ? null : d));
+    if (scope.kind === "tag" && scope.id === tag.id) select({ kind: "tagged" });
+    reloadAll();
+  };
+
+  const tagMenu = (tag: Tag): MenuItem[] => [
+    {
+      label: "Mark as read",
+      icon: <Check size={14} />,
+      onSelect: () =>
+        api("/api/articles/mark-read", {
+          method: "POST",
+          json: { scope: "tag", id: tag.id },
+        }).then(reloadAll),
+    },
+    {
+      label: "Edit tag…",
+      icon: <Pencil size={14} />,
+      onSelect: () => setDialog({ kind: "tag", tag }),
+    },
+    {
+      label: "Delete tag",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: () => deleteTag(tag),
+    },
+  ];
+
   const toggleFolder = async (folder: SidebarFolder) => {
     setSidebar(
       (s) =>
@@ -752,24 +842,35 @@ export function AppShell() {
     scope.kind === "monitor"
       ? sidebar?.monitors.find((m) => m.id === scope.id)
       : undefined;
+  const currentTag =
+    scope.kind === "tag"
+      ? sidebar?.tags.find((t) => t.id === scope.id)
+      : undefined;
   const title =
     scope.kind === "all"
       ? "All articles"
       : scope.kind === "saved"
-        ? "Saved"
-        : scope.kind === "search"
-          ? "Search"
-          : (currentFeed?.title ??
-            currentFolder?.name ??
-            currentMonitor?.name ??
-            "…");
+        ? "Read later"
+        : scope.kind === "archive"
+          ? "Archive"
+          : scope.kind === "tagged"
+            ? "All tagged articles"
+            : scope.kind === "search"
+              ? "Search"
+              : (currentFeed?.title ??
+                currentFolder?.name ??
+                currentMonitor?.name ??
+                currentTag?.name ??
+                "…");
   const titleMenu = currentFeed
     ? feedMenu(currentFeed)
     : currentFolder
       ? folderMenu(currentFolder)
       : currentMonitor
         ? monitorMenu(currentMonitor)
-        : undefined;
+        : currentTag
+          ? tagMenu(currentTag)
+          : undefined;
 
   const viewMenu: MenuItem[] = [
     { heading: "Show" },
@@ -829,7 +930,7 @@ export function AppShell() {
         ? "automate"
         : mode.kind === "add"
           ? "add"
-          : scope.kind === "saved"
+          : savedView
             ? "saved"
             : scope.kind === "search"
               ? "search"
@@ -888,7 +989,7 @@ export function AppShell() {
       onFeeds={() =>
         mode.kind !== "read"
           ? (setMode({ kind: "read" }), setSidebarCollapsed(false))
-          : scope.kind === "saved" || scope.kind === "search"
+          : savedView || scope.kind === "search"
             ? select({ kind: "all" })
             : setSidebarCollapsed((c) => !c)
       }
@@ -913,7 +1014,18 @@ export function AppShell() {
       onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
     />
   );
-  const sidebarPanel = (
+  const sidebarPanel = savedView ? (
+    <SavedPanel
+      sidebar={sidebar}
+      scope={scope}
+      actions={{
+        select,
+        newTag: () => setDialog({ kind: "tag" }),
+        manageTags: () => setDialog({ kind: "manage-tags" }),
+        tagMenu,
+      }}
+    />
+  ) : (
     <SidebarPanel
       sidebar={sidebar}
       scope={scope}
@@ -971,6 +1083,7 @@ export function AppShell() {
             <RulesPage
               key={`${mode.presetFeedId ?? ""}:${mode.presetFolderId ?? ""}`}
               sidebar={sidebar}
+              onTagsChanged={loadSidebar}
               preset={
                 mode.presetFeedId || mode.presetFolderId
                   ? { feedId: mode.presetFeedId, folderId: mode.presetFolderId }
@@ -1118,6 +1231,16 @@ export function AppShell() {
                     Nothing saved yet. Use the bookmark icon to keep articles
                     for later.
                   </p>
+                ) : scope.kind === "archive" ? (
+                  <p className="text-muted">
+                    The archive is empty. Archived articles are kept forever;
+                    use the archive button above an article (or press e).
+                  </p>
+                ) : scope.kind === "tagged" || scope.kind === "tag" ? (
+                  <p className="text-muted">
+                    No tagged articles yet. Use the tag button above an
+                    article, or an automation rule, to tag articles.
+                  </p>
                 ) : scope.kind === "monitor" ? (
                   <p className="text-muted">
                     No articles match this monitoring feed yet.
@@ -1139,8 +1262,12 @@ export function AppShell() {
                 key={selected.id}
                 item={selected}
                 settings={settings}
+                tags={sidebar?.tags ?? []}
                 onToggleSave={() => toggleSave(selected)}
                 onToggleRead={() => setRead(selected, !selected.isRead)}
+                onToggleArchive={() => toggleArchive(selected)}
+                onTagsChanged={loadSidebar}
+                onOpenTag={(id) => select({ kind: "tag", id })}
                 onPrev={() => step(-1)}
                 onNext={() => step(1)}
                 onBack={() => setSelectedId(null)}
@@ -1170,20 +1297,11 @@ export function AppShell() {
           }}
         />
       )}
-      {dialog?.kind === "rename-folder" && (
-        <PromptDialog
-          title="Rename folder"
-          label="Name"
-          initial={dialog.folder.name}
+      {dialog?.kind === "folder-properties" && (
+        <FolderPropertiesDialog
+          folder={dialog.folder}
           onClose={() => setDialog(null)}
-          onSubmit={async (v) => {
-            await api(`/api/folders/${dialog.folder.id}`, {
-              method: "PATCH",
-              json: { name: v },
-            });
-            setDialog(null);
-            loadSidebar();
-          }}
+          onChanged={loadSidebar}
         />
       )}
       {dialog?.kind === "delete-folder" && (
@@ -1202,6 +1320,28 @@ export function AppShell() {
               select({ kind: "all" });
             reloadAll();
           }}
+        />
+      )}
+      {dialog?.kind === "tag" && (
+        <TagDialog
+          key={dialog.tag?.id ?? "new"}
+          tag={dialog.tag}
+          onClose={() => setDialog(null)}
+          onDelete={dialog.tag ? () => deleteTag(dialog.tag!) : undefined}
+          onSaved={(tag, keepOpen) => {
+            if (!keepOpen) setDialog(null);
+            loadSidebar();
+            if (!dialog.tag) select({ kind: "tag", id: tag.id });
+          }}
+        />
+      )}
+      {dialog?.kind === "manage-tags" && (
+        <ManageTagsDialog
+          tags={sidebar?.tags ?? []}
+          onClose={() => setDialog(null)}
+          onNew={() => setDialog({ kind: "tag" })}
+          onEdit={(tag) => setDialog({ kind: "tag", tag })}
+          onDelete={deleteTag}
         />
       )}
       {dialog?.kind === "new-folder" && (

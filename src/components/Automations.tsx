@@ -12,7 +12,9 @@ import {
   Mail,
   MoreHorizontal,
   Plus,
+  Play,
   Send,
+  Tag as TagIcon,
   Trash2,
   X,
   Zap,
@@ -28,6 +30,7 @@ import type {
   RuleField,
   RuleMatch,
   RuleOp,
+  RuleRunResult,
   RulesResponse,
   RuleSummary,
   RuleTestResult,
@@ -75,7 +78,7 @@ const SECTIONS: {
     label: "Rules",
     icon: <Zap size={17} />,
     description:
-      "Get an email or a push notification when a new article matches your conditions.",
+      "Get an email or a push notification, or tag articles, when a new article matches your conditions.",
   },
   {
     id: "filters",
@@ -407,9 +410,12 @@ function newDraft(
 export function RulesPage({
   sidebar,
   preset,
+  onTagsChanged,
 }: {
   sidebar: Sidebar | null;
   preset?: RuleTargetPreset;
+  /** A rule created a tag or tagged articles, so the sidebar's tag list is stale. */
+  onTagsChanged?: () => void;
 }) {
   const [data, setData] = useState<RulesResponse | null>(null);
   const [open, setOpen] = useState<number | "new" | null>(
@@ -508,6 +514,7 @@ export function RulesPage({
             <div className="rounded-lg border border-line bg-elevated p-4">
               <RuleEditor
                 sidebar={sidebar}
+                onTagsChanged={onTagsChanged}
                 providers={data.providers}
                 initial={newDraft(data.providers, preset)}
                 onCancel={() => setOpen(null)}
@@ -599,6 +606,7 @@ export function RulesPage({
                       key={r.id}
                       ruleId={r.id}
                       sidebar={sidebar}
+                      onTagsChanged={onTagsChanged}
                       providers={data.providers}
                       initial={{
                         name: r.name,
@@ -634,8 +642,8 @@ export function RulesPage({
               onAction={() => setOpen("new")}
             >
               Get an email or a push notification the moment a feed publishes
-              something you care about. Pick a feed, add conditions, and choose
-              how you want to hear about it.
+              something you care about, or tag it automatically. Pick a feed,
+              add conditions, and choose what should happen.
             </EmptyState>
           )}
           {!data && (
@@ -692,6 +700,7 @@ function RuleEditor({
   initial,
   onCancel,
   onSaved,
+  onTagsChanged,
 }: {
   ruleId?: number;
   sidebar: Sidebar | null;
@@ -699,12 +708,16 @@ function RuleEditor({
   initial: Draft;
   onCancel: () => void;
   onSaved: (id: number) => void;
+  onTagsChanged?: () => void;
 }) {
   const [draft, setDraft] = useState<Draft>(initial);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [running, setRunning] = useState(false);
   const [err, setErr] = useState("");
   const [test, setTest] = useState<RuleTestResult | null>(null);
+  const [run, setRun] = useState<RuleRunResult | null>(null);
+  const tags = sidebar?.tags ?? [];
   const [matches, setMatches] = useState<RuleMatch[] | null>(null);
 
   useEffect(() => {
@@ -758,6 +771,8 @@ function RuleEditor({
           ).id,
         );
       }
+      // Saving may have created a tag named in a tag action.
+      if (def.actions.some((a) => a.type === "tag" && !a.tagId)) onTagsChanged?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not save");
       setSaving(false);
@@ -781,6 +796,28 @@ function RuleEditor({
       setTesting(false);
     }
   }
+
+  async function runRule() {
+    setRunning(true);
+    setErr("");
+    setRun(null);
+    try {
+      setRun(
+        await api<RuleRunResult>("/api/rules/run", {
+          method: "POST",
+          json: { definition: def },
+        }),
+      );
+      onTagsChanged?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const hasNotify = def.actions.some((a) => a.type !== "tag");
+  const hasTag = def.actions.some((a) => a.type === "tag");
 
   const providerHint = (a: RuleAction) =>
     a.type === "email" && !providers.email ? (
@@ -865,15 +902,51 @@ function RuleEditor({
                     i,
                     e.target.value === "email"
                       ? { type: "email", to: "" }
-                      : { type: "pushover", priority: 0, device: "" },
+                      : e.target.value === "tag"
+                        ? { type: "tag", tagId: 0, tagName: "" }
+                        : { type: "pushover", priority: 0, device: "" },
                   )
                 }
                 aria-label="Action"
               >
                 <option value="email">Send to email</option>
                 <option value="pushover">Push notification (Pushover)</option>
+                <option value="tag">Assign tag</option>
               </select>
-              {a.type === "email" ? (
+              {a.type === "tag" ? (
+                <>
+                  <select
+                    className={`${selectClass} min-w-0 flex-1`}
+                    value={a.tagId}
+                    onChange={(e) =>
+                      setAction(i, {
+                        type: "tag",
+                        tagId: Number(e.target.value),
+                        tagName: "",
+                      })
+                    }
+                    aria-label="Tag"
+                  >
+                    <option value={0}>New tag…</option>
+                    {tags.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  {!a.tagId && (
+                    <input
+                      className={`${inputClass} h-10 min-w-0 flex-1`}
+                      value={a.tagName ?? ""}
+                      onChange={(e) =>
+                        setAction(i, { ...a, tagName: e.target.value })
+                      }
+                      placeholder="New tag name…"
+                      aria-label="New tag name"
+                    />
+                  )}
+                </>
+              ) : a.type === "email" ? (
                 <input
                   type="email"
                   className={`${inputClass} h-10 min-w-0 flex-1`}
@@ -940,22 +1013,50 @@ function RuleEditor({
       </Band>
 
       {test && <TestResult test={test} />}
+      {run && (
+        <p className="flex items-center gap-2 rounded-md border border-line bg-sidebar px-4 py-3 text-sm">
+          <TagIcon size={15} className="shrink-0 text-accent" />
+          {run.matched
+            ? `${run.matched} of ${run.checked} existing articles matched; ${run.tagged} newly tagged.`
+            : `None of the ${run.checked} existing articles matched.`}
+        </p>
+      )}
       {err && <p className="text-sm text-danger">{err}</p>}
 
       <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-        <button
-          type="button"
-          onClick={sendTest}
-          disabled={testing || !def.actions.length}
-          className={`${secondaryButton} mr-auto`}
-        >
-          {testing ? (
-            <Loader2 size={15} className="animate-spin" />
-          ) : (
-            <Send size={15} />
-          )}{" "}
-          Send test
-        </button>
+        <div className="mr-auto flex flex-wrap gap-2">
+          {hasNotify && (
+            <button
+              type="button"
+              onClick={sendTest}
+              disabled={testing}
+              className={secondaryButton}
+            >
+              {testing ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Send size={15} />
+              )}{" "}
+              Send test
+            </button>
+          )}
+          {hasTag && (
+            <button
+              type="button"
+              onClick={runRule}
+              disabled={running}
+              title="Tag the existing articles this rule matches (newest 5,000 in scope)"
+              className={secondaryButton}
+            >
+              {running ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Play size={15} />
+              )}{" "}
+              Run rule
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={save}

@@ -3,6 +3,9 @@
 export type Scope =
   | { kind: "all" }
   | { kind: "saved" }
+  | { kind: "archive" }
+  | { kind: "tagged" }
+  | { kind: "tag"; id: number }
   | { kind: "feed"; id: number }
   | { kind: "folder"; id: number }
   | { kind: "monitor"; id: number }
@@ -35,7 +38,8 @@ export type SidebarFeed = {
   lastFetchedAt: number | null;
 };
 
-export type SidebarFolder = { id: number; name: string; collapsed: boolean; unread: number; feeds: SidebarFeed[] };
+/** `feedToken` is set while the folder's public RSS output feed is on. */
+export type SidebarFolder = { id: number; name: string; collapsed: boolean; unread: number; feeds: SidebarFeed[]; feedToken: string | null };
 
 /** Rules and filters that target a feed or folder; they are deleted along with it. */
 export type LinkedAutomations = { rules: { id: number; name: string }[]; filters: number };
@@ -43,12 +47,21 @@ export type LinkedAutomations = { rules: { id: number; name: string }[]; filters
 /** What deleting a folder removes: its own rules and filters, and (if its feeds go too) theirs. */
 export type FolderAutomations = { folder: LinkedAutomations; feeds: LinkedAutomations };
 
+/** `count` is how many visible articles carry the tag; `feedToken` is set while its RSS output feed is on. */
+export type Tag = { id: number; name: string; feedToken: string | null; count: number };
+
+export type TagRef = { id: number; name: string };
+
+export type TagSuggestions = { suggestions: string[]; ai: boolean; error: string | null };
+
 export type Sidebar = {
   monitors: SidebarMonitor[];
+  tags: Tag[];
   folders: SidebarFolder[];
   unfiled: SidebarFeed[];
   totalUnread: number;
   savedCount: number;
+  archivedCount: number;
   refreshing: boolean;
 };
 
@@ -65,6 +78,7 @@ export type ArticleListItem = {
   publishedAt: number;
   isRead: boolean;
   isSaved: boolean;
+  isArchived: boolean;
 };
 
 export type ArticleDetail = ArticleListItem & {
@@ -73,6 +87,7 @@ export type ArticleDetail = ArticleListItem & {
   fullContent: string | null;
   summary: string | null;
   contentLength: number;
+  tags: TagRef[];
 };
 
 /** `highWater` is the newest article id when the list was loaded; anything above it arrived later. */
@@ -98,7 +113,7 @@ export type CredentialStatus = { set: boolean; source: "settings" | "env" | null
 
 export function scopeToParams(scope: Scope): URLSearchParams {
   const p = new URLSearchParams({ scope: scope.kind });
-  if (scope.kind === "feed" || scope.kind === "folder" || scope.kind === "monitor") p.set("id", String(scope.id));
+  if (scope.kind === "feed" || scope.kind === "folder" || scope.kind === "monitor" || scope.kind === "tag") p.set("id", String(scope.id));
   if (scope.kind === "search") p.set("q", scope.q);
   return p;
 }
@@ -114,7 +129,14 @@ export type RuleCondition = { join: "and" | "or"; field: RuleField; op: RuleOp; 
 export type RuleTrigger = { type: "new_article"; feedId: number | null; folderId: number | null };
 
 export type PushoverPriority = -1 | 0 | 1;
-export type RuleAction = { type: "email"; to: string } | { type: "pushover"; priority: PushoverPriority; device: string };
+/**
+ * `tag` assigns a tag to matching articles. In the editor `tagId` may be 0 with a `tagName`: saving
+ * the rule creates that tag and stores its id.
+ */
+export type RuleAction =
+  | { type: "email"; to: string }
+  | { type: "pushover"; priority: PushoverPriority; device: string }
+  | { type: "tag"; tagId: number; tagName?: string };
 
 export type RuleDefinition = { trigger: RuleTrigger; conditions: RuleCondition[]; wholeWords: boolean; actions: RuleAction[] };
 
@@ -129,6 +151,9 @@ export type RulesResponse = { rules: RuleSummary[]; providers: { email: boolean;
 export type ActionResult = { action: string; ok: boolean; error?: string };
 
 export type RuleTestResult = { article: { id: number; title: string } | null; matched: boolean; results: ActionResult[] };
+
+/** Result of running a rule's tag actions over existing articles. */
+export type RuleRunResult = { checked: number; matched: number; tagged: number };
 
 // ---------- Filters ----------
 

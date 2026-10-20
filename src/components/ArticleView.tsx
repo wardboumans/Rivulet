@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   Bookmark,
   ChevronDown,
@@ -16,10 +18,18 @@ import {
   MoreHorizontal,
   RefreshCw,
   Sparkles,
+  Tag as TagIcon,
   X,
 } from "lucide-react";
 import { api, hostname, timeAgo } from "@/lib/client";
-import type { AppSettings, ArticleDetail, ArticleListItem } from "@/lib/types";
+import type {
+  AppSettings,
+  ArticleDetail,
+  ArticleListItem,
+  Tag,
+  TagRef,
+} from "@/lib/types";
+import { TagPicker } from "./Tags";
 import { AppLink, IconButton, Menu } from "./ui";
 
 /** Render the model's markdown bullets as React nodes (no raw HTML from the LLM reaches the DOM). */
@@ -66,16 +76,25 @@ function SummaryText({ text }: { text: string }) {
 export function ArticleView({
   item,
   settings,
+  tags,
   onToggleSave,
   onToggleRead,
+  onToggleArchive,
+  onTagsChanged,
+  onOpenTag,
   onPrev,
   onNext,
   onBack,
 }: {
   item: ArticleListItem;
   settings: AppSettings | null;
+  /** Every tag, for the tag picker. */
+  tags: Tag[];
   onToggleSave: () => void;
   onToggleRead: () => void;
+  onToggleArchive: () => void;
+  onTagsChanged: () => void;
+  onOpenTag: (id: number) => void;
   onPrev: () => void;
   onNext: () => void;
   onBack?: () => void;
@@ -247,11 +266,36 @@ export function ArticleView({
         >
           <Bookmark size={19} fill={item.isSaved ? "currentColor" : "none"} />
         </IconButton>
+        <TagPicker
+          articleId={id}
+          allTags={tags}
+          applied={detail?.tags ?? null}
+          hasAiKey={hasKey}
+          onApplied={(t: TagRef[]) =>
+            setDetail((d) => (d ? { ...d, tags: t } : d))
+          }
+          onTagsChanged={onTagsChanged}
+        />
         <IconButton
           label={item.isRead ? "Mark as unread (m)" : "Mark as read (m)"}
           onClick={onToggleRead}
         >
           {item.isRead ? <Circle size={19} /> : <CircleCheck size={19} />}
+        </IconButton>
+        <IconButton
+          label={
+            item.isArchived
+              ? "Remove from Archive (e)"
+              : "Move to Archive, kept forever (e)"
+          }
+          onClick={onToggleArchive}
+          active={item.isArchived}
+        >
+          {item.isArchived ? (
+            <ArchiveRestore size={19} />
+          ) : (
+            <Archive size={19} />
+          )}
         </IconButton>
         <button
           type="button"
@@ -363,6 +407,20 @@ export function ArticleView({
               {timeAgo(item.publishedAt)}
             </span>
           </p>
+          {!!detail?.tags.length && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {detail.tags.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onOpenTag(t.id)}
+                  className="inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-xs font-semibold text-muted hover:border-accent hover:text-accent"
+                >
+                  <TagIcon size={12} /> {t.name}
+                </button>
+              ))}
+            </div>
+          )}
 
           {needKey && (
             <p className="mt-6 flex items-start gap-2 rounded-md border border-line bg-sidebar px-4 py-3 text-sm text-muted">

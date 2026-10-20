@@ -63,8 +63,8 @@ export function IconButton({
       aria-pressed={active}
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-40 ${
-        active ? "text-accent" : ""
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-hover disabled:opacity-40 ${
+        active ? "text-accent" : "text-muted hover:text-fg"
       } ${className}`}
     >
       {children}

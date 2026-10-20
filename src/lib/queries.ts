@@ -7,6 +7,7 @@ import {
   queryWhere,
 } from "./monitors";
 import { toFtsQuery } from "./search";
+import { articleTags, listTags } from "./tags";
 import type {
   ArticleDetail,
   ArticleListItem,
@@ -34,10 +35,13 @@ export function parseScope(
   switch (kind) {
     case "all":
     case "saved":
+    case "archive":
+    case "tagged":
       return { kind };
     case "feed":
     case "folder":
     case "monitor":
+    case "tag":
       return Number.isInteger(id) && id > 0 ? { kind, id } : null;
     case "search": {
       const q = String(get("q") ?? "").trim();
@@ -88,15 +92,21 @@ export function getSidebar(): Sidebar {
   const folders: SidebarFolder[] = (
     db
       .prepare(
-        "SELECT id, name, collapsed FROM folders ORDER BY position, name COLLATE NOCASE",
+        "SELECT id, name, collapsed, feed_token FROM folders ORDER BY position, name COLLATE NOCASE",
       )
-      .all() as { id: number; name: string; collapsed: number }[]
+      .all() as {
+        id: number;
+        name: string;
+        collapsed: number;
+        feed_token: string | null;
+      }[]
   ).map((f) => {
     const own = feeds.filter((x) => x.folderId === f.id);
     return {
       id: f.id,
       name: f.name,
       collapsed: !!f.collapsed,
+      feedToken: f.feed_token,
       feeds: own,
       unread: own.reduce((s, x) => s + x.unread, 0),
     };
@@ -109,12 +119,18 @@ export function getSidebar(): Sidebar {
 
   return {
     monitors,
+    tags: listTags(),
     folders,
     unfiled: feeds.filter((f) => f.folderId === null),
     totalUnread: feeds.reduce((s, f) => s + f.unread, 0),
     savedCount: (
       db
         .prepare("SELECT COUNT(*) AS n FROM articles WHERE is_saved = 1")
+        .get() as { n: number }
+    ).n,
+    archivedCount: (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM articles WHERE archived_at IS NOT NULL AND filtered = 0")
         .get() as { n: number }
     ).n,
     refreshing: isRefreshing(),
@@ -143,6 +159,15 @@ function scopeWhereRaw(scope: Scope): Where {
       return { sql: "1 = 1", params: [] };
     case "saved":
       return { sql: "a.is_saved = 1", params: [] };
+    case "archive":
+      return { sql: "a.archived_at IS NOT NULL", params: [] };
+    case "tagged":
+      return { sql: "a.id IN (SELECT article_id FROM article_tags)", params: [] };
+    case "tag":
+      return {
+        sql: "a.id IN (SELECT article_id FROM article_tags WHERE tag_id = ?)",
+        params: [scope.id],
+      };
     case "feed":
       return { sql: "a.feed_id = ?", params: [scope.id] };
     case "folder":
@@ -165,7 +190,7 @@ function scopeWhereRaw(scope: Scope): Where {
 
 const LIST_COLUMNS = `
   a.id, a.feed_id, f.title AS feed_title, f.icon_url AS feed_icon, a.title, a.url, a.author,
-  substr(a.excerpt, 1, 240) AS excerpt, a.image_url, a.published_at, a.is_read, a.is_saved, a.saved_at`;
+  substr(a.excerpt, 1, 240) AS excerpt, a.image_url, a.published_at, a.is_read, a.is_saved, a.saved_at, a.archived_at`;
 
 type ListRow = {
   id: number;
@@ -181,6 +206,7 @@ type ListRow = {
   is_read: number;
   is_saved: number;
   saved_at: number | null;
+  archived_at: number | null;
 };
 
 function toItem(r: ListRow): ArticleListItem {
@@ -197,6 +223,7 @@ function toItem(r: ListRow): ArticleListItem {
     publishedAt: r.published_at,
     isRead: !!r.is_read,
     isSaved: !!r.is_saved,
+    isArchived: r.archived_at !== null,
   };
 }
 
@@ -212,8 +239,13 @@ export function listArticles(
   const db = getDb();
   const limit = Math.min(opts.limit ?? 40, 100);
   const where = scopeWhere(scope);
-  // Saved items are ordered by when they were saved; everything else by publish date.
-  const key = scope.kind === "saved" ? "a.saved_at" : "a.published_at";
+  // Saved and archived items are ordered by when they were saved or archived; everything else by publish date.
+  const key =
+    scope.kind === "saved"
+      ? "a.saved_at"
+      : scope.kind === "archive"
+        ? "a.archived_at"
+        : "a.published_at";
   const dir = opts.oldestFirst ? "ASC" : "DESC";
   const cmp = opts.oldestFirst ? ">" : "<";
 
@@ -238,7 +270,9 @@ export function listArticles(
   const lastKey = last
     ? scope.kind === "saved"
       ? (last.saved_at ?? 0)
-      : last.published_at
+      : scope.kind === "archive"
+        ? (last.archived_at ?? 0)
+        : last.published_at
     : 0;
 
   const highWater = (
@@ -315,12 +349,14 @@ export function getArticle(id: number): ArticleDetail | null {
     fullContent: r.full_content,
     summary: r.summary,
     contentLength: content.replace(/<[^>]+>/g, "").length,
+    tags: articleTags(r.id),
   };
 }
 
+/** Archiving moves an article out of Read later; it then stays in the archive (kept forever) until removed. */
 export function setArticleState(
   id: number,
-  patch: { isRead?: boolean; isSaved?: boolean },
+  patch: { isRead?: boolean; isSaved?: boolean; isArchived?: boolean },
 ) {
   const db = getDb();
   const now = Date.now();
@@ -334,6 +370,12 @@ export function setArticleState(
     db.prepare(
       "UPDATE articles SET is_saved = ?, saved_at = ? WHERE id = ?",
     ).run(patch.isSaved ? 1 : 0, patch.isSaved ? now : null, id);
+  if (patch.isArchived === true)
+    db.prepare(
+      "UPDATE articles SET archived_at = COALESCE(archived_at, ?), is_saved = 0, saved_at = NULL WHERE id = ?",
+    ).run(now, id);
+  else if (patch.isArchived === false)
+    db.prepare("UPDATE articles SET archived_at = NULL WHERE id = ?").run(id);
 }
 
 /**

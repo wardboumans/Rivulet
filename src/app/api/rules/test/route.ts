@@ -5,7 +5,7 @@ import { normalizeDefinition, testRule } from "@/lib/automations";
 export async function POST(req: Request) {
   const b = await body<{ name: string; definition: unknown }>(req);
   try {
-    return json(await testRule(b.name?.trim() ?? "", normalizeDefinition(b.definition)));
+    return json(await testRule(b.name?.trim() ?? "", normalizeDefinition(b.definition, { createTags: false })));
   } catch (e) {
     return error(e instanceof Error ? e.message : "Test failed");
   }

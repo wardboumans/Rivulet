@@ -1,9 +1,10 @@
 import { getDb } from "./db";
 import { htmlToText } from "./html";
 import { getCredential } from "./settings";
+import { ensureTag, getTag, tagArticles } from "./tags";
 import type {
-  ActionResult, PushoverPriority, Rule, RuleAction, RuleCondition, RuleDefinition, RuleField, RuleMatch, RuleOp, RuleSummary,
-  RuleTestResult, RuleTrigger,
+  ActionResult, PushoverPriority, Rule, RuleAction, RuleCondition, RuleDefinition, RuleField, RuleMatch, RuleOp, RuleRunResult,
+  RuleSummary, RuleTestResult, RuleTrigger,
 } from "./types";
 
 // ---------- providers ----------
@@ -40,8 +41,11 @@ export function normalizeConditions(input: unknown): RuleCondition[] {
   });
 }
 
-/** Validate untrusted rule JSON. Throws an Error with a user-facing message. */
-export function normalizeDefinition(input: unknown): RuleDefinition {
+/**
+ * Validate untrusted rule JSON. Throws an Error with a user-facing message. A tag action naming a
+ * new tag creates it when `createTags` is set (saving or running a rule); otherwise its id stays 0.
+ */
+export function normalizeDefinition(input: unknown, { createTags = true }: { createTags?: boolean } = {}): RuleDefinition {
   const d = (input ?? {}) as Partial<RuleDefinition>;
   const t = (d.trigger ?? {}) as Partial<RuleTrigger>;
   const id = (v: unknown) => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : null);
@@ -60,6 +64,13 @@ export function normalizeDefinition(input: unknown): RuleDefinition {
       const device = String(a.device ?? "").trim();
       if (device && !/^[\w-]{1,25}(,[\w-]{1,25})*$/.test(device)) throw new Error("Pushover device names may only contain letters, numbers, _ and -");
       return { type: "pushover", priority, device };
+    }
+    if (a?.type === "tag") {
+      const tagId = id(a.tagId);
+      if (tagId && getTag(tagId)) return { type: "tag", tagId };
+      const name = String(a.tagName ?? "").trim();
+      if (!name) throw new Error("Choose a tag, or enter a name for a new one");
+      return { type: "tag", tagId: createTags ? ensureTag(name) : 0 };
     }
     throw new Error("Unknown action type");
   });
@@ -307,14 +318,21 @@ async function sendPushover(action: Extract<RuleAction, { type: "pushover" }>, r
 }
 
 function actionLabel(a: RuleAction) {
+  if (a.type === "tag") return `Tag “${getTag(a.tagId)?.name ?? "deleted tag"}”`;
   return a.type === "email" ? `Email to ${a.to}` : "Pushover notification";
+}
+
+function assignTag(tagId: number, articles: RuleArticle[]): number {
+  if (!getTag(tagId)) throw new Error("The tag no longer exists");
+  return tagArticles(tagId, articles.map((a) => a.id));
 }
 
 async function runActions(name: string, def: RuleDefinition, articles: RuleArticle[]): Promise<ActionResult[]> {
   const results: ActionResult[] = [];
   for (const action of def.actions) {
     try {
-      if (action.type === "email") await sendEmail(action.to, name, articles);
+      if (action.type === "tag") assignTag(action.tagId, articles);
+      else if (action.type === "email") await sendEmail(action.to, name, articles);
       else await sendPushover(action, name, articles);
       results.push({ action: actionLabel(action), ok: true });
     } catch (e) {
@@ -362,17 +380,36 @@ export async function runRulesForNewArticles(feed: { id: number; folder_id: numb
  * Send a test for a (possibly unsaved) rule using the newest article it matches in its trigger
  * scope, falling back to the newest article in scope so delivery can be checked either way.
  */
-export async function testRule(name: string, def: RuleDefinition): Promise<RuleTestResult> {
-  const db = getDb();
-  const t = def.trigger;
+function triggerArticles(t: RuleTrigger, limit: number): RuleArticle[] {
   const where = "WHERE a.filtered = 0" + (t.feedId ? " AND a.feed_id = ?" : t.folderId ? " AND f.folder_id = ?" : "");
   const params = t.feedId ? [t.feedId] : t.folderId ? [t.folderId] : [];
-  const candidates = db.prepare(`${ARTICLE_SQL} ${where} ORDER BY a.published_at DESC LIMIT 300`).all(...params) as RuleArticle[];
+  return getDb().prepare(`${ARTICLE_SQL} ${where} ORDER BY a.published_at DESC LIMIT ?`).all(...params, limit) as RuleArticle[];
+}
+
+/**
+ * Send a test for a (possibly unsaved) rule's notification actions using the newest article it
+ * matches in its trigger scope, falling back to the newest article in scope so delivery can be
+ * checked either way. Tag actions are skipped: "Run rule" applies those.
+ */
+export async function testRule(name: string, def: RuleDefinition): Promise<RuleTestResult> {
+  const candidates = triggerArticles(def.trigger, 300);
   const hit = candidates.find((a) => ruleMatches(def, a));
   const article = hit ?? candidates[0];
   if (!article) return { article: null, matched: false, results: [] };
-  const results = await runActions(`${name || "Test rule"} (test)`, def, [article]);
+  const notify = { ...def, actions: def.actions.filter((a) => a.type !== "tag") };
+  const results = await runActions(`${name || "Test rule"} (test)`, notify, [article]);
   return { article: { id: article.id, title: article.title }, matched: !!hit, results };
+}
+
+export const RUN_RULE_LIMIT = 5000;
+
+/** Apply a rule's tag actions to the existing articles it matches (newest first, up to RUN_RULE_LIMIT). */
+export function runRuleTags(def: RuleDefinition): RuleRunResult {
+  const candidates = triggerArticles(def.trigger, RUN_RULE_LIMIT);
+  const matched = candidates.filter((a) => ruleMatches(def, a));
+  let tagged = 0;
+  for (const action of def.actions) if (action.type === "tag") tagged += assignTag(action.tagId, matched);
+  return { checked: candidates.length, matched: matched.length, tagged };
 }
 
 /** Keep the match log from growing forever. */

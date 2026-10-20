@@ -8,6 +8,8 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   if (pathname === "/login" || pathname === "/api/login") return NextResponse.next();
+  // Tag and folder output feeds are public by design: the unguessable token in the URL guards them.
+  if (pathname.startsWith("/feeds/")) return NextResponse.next();
 
   if (request.cookies.get(AUTH_COOKIE)?.value === (await authToken(password))) return NextResponse.next();
 

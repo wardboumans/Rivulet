@@ -2,6 +2,10 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * Version 1: the baseline schema. Never edit it — databases created before migrations existed are
+ * at this version (user_version 0 or 1). Schema changes go in MIGRATIONS below.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY,
@@ -121,14 +125,81 @@ function open(): Database.Database {
   return db;
 }
 
-const g = globalThis as unknown as { __readerDb?: Database.Database; __readerSchema?: string };
+/**
+ * Versioned schema changes on top of the baseline, tracked in PRAGMA user_version. Each runs once,
+ * in a transaction, in order. Append new ones; never edit or reorder a released migration.
+ */
+const MIGRATIONS: { version: number; sql: string }[] = [
+  {
+    version: 2,
+    sql: `
+-- Tags for organizing articles (lib/tags.ts). feed_token is set while the tag's public RSS output feed is on.
+CREATE TABLE tags (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  pinned INTEGER NOT NULL DEFAULT 1,
+  feed_token TEXT UNIQUE,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE article_tags (
+  article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (article_id, tag_id)
+) WITHOUT ROWID;
+CREATE INDEX idx_article_tags_tag ON article_tags(tag_id, created_at);
+
+-- Archived articles are kept forever: retention never purges them.
+ALTER TABLE articles ADD COLUMN archived_at INTEGER;
+CREATE INDEX idx_articles_archived ON articles(archived_at) WHERE archived_at IS NOT NULL;
+`,
+  },
+  {
+    version: 3,
+    sql: `
+-- Tag pinning was dropped: every tag is listed in the sidebar.
+ALTER TABLE tags DROP COLUMN pinned;
+`,
+  },
+  {
+    version: 4,
+    sql: `
+-- Set while the folder's public RSS output feed is on (lib/outputFeeds.ts).
+ALTER TABLE folders ADD COLUMN feed_token TEXT;
+CREATE UNIQUE INDEX idx_folders_feed_token ON folders(feed_token) WHERE feed_token IS NOT NULL;
+`,
+  },
+];
+
+const BASELINE_VERSION = 1;
+export const SCHEMA_VERSION = MIGRATIONS.reduce((v, m) => Math.max(v, m.version), BASELINE_VERSION);
+
+function migrate(db: Database.Database) {
+  db.exec(SCHEMA);
+  let current = db.pragma("user_version", { simple: true }) as number;
+  if (current < BASELINE_VERSION) db.pragma(`user_version = ${(current = BASELINE_VERSION)}`);
+  if (current > SCHEMA_VERSION)
+    throw new Error(`Database schema version ${current} is newer than this build supports (${SCHEMA_VERSION}); upgrade Rivulet.`);
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) continue;
+    db.transaction(() => {
+      db.exec(m.sql);
+      db.pragma(`user_version = ${m.version}`);
+    })();
+    console.log(`[rivulet] migrated database to schema version ${m.version}`);
+  }
+}
+
+const g = globalThis as unknown as { __readerDb?: Database.Database; __readerSchemaVersion?: number };
 
 export function getDb(): Database.Database {
   if (!g.__readerDb) g.__readerDb = open();
-  // The connection outlives dev hot reloads, so (re)apply the idempotent schema whenever it changes.
-  if (g.__readerSchema !== SCHEMA) {
-    g.__readerDb.exec(SCHEMA);
-    g.__readerSchema = SCHEMA;
+  // The connection outlives dev hot reloads, so migrate again when a newer migration appears. Only
+  // upward: a stale module copy from before the reload (e.g. the scheduler's) must not re-check.
+  if ((g.__readerSchemaVersion ?? 0) < SCHEMA_VERSION) {
+    migrate(g.__readerDb);
+    g.__readerSchemaVersion = SCHEMA_VERSION;
   }
   return g.__readerDb;
 }

@@ -2,9 +2,25 @@
 
 import { useState } from "react";
 
-import { AlertTriangle, ChevronDown, ChevronRight, FolderPlus, MoreHorizontal, Newspaper, RefreshCw, ScanSearch, Settings2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  Bookmark,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
+  ListChecks,
+  MoreHorizontal,
+  Newspaper,
+  RefreshCw,
+  ScanSearch,
+  Settings,
+  Settings2,
+  Tag as TagIcon,
+  TagPlus,
+} from "lucide-react";
 import { formatCount } from "@/lib/client";
-import type { Scope, Sidebar, SidebarFeed, SidebarFolder, SidebarMonitor } from "@/lib/types";
+import type { Scope, Sidebar, SidebarFeed, SidebarFolder, SidebarMonitor, Tag } from "@/lib/types";
 import { FeedIcon, Menu, type MenuItem } from "./ui";
 
 export type SidebarActions = {
@@ -28,6 +44,7 @@ function Row({
   indent,
   menu,
   error,
+  quiet,
 }: {
   active: boolean;
   onClick: () => void;
@@ -38,6 +55,8 @@ function Row({
   indent?: boolean;
   menu?: MenuItem[];
   error?: string | null;
+  /** The count is a total, not unread: don't bold the row for it. */
+  quiet?: boolean;
 }) {
   return (
     <div
@@ -47,7 +66,7 @@ function Row({
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onClick())}
       className={`group relative mx-2 flex h-8 cursor-pointer select-none items-center gap-2.5 rounded-md pr-2 text-[14px] leading-[30.8px] outline-none focus-visible:ring-2 focus-visible:ring-accent/40 has-[[aria-expanded=true]]:bg-hover ${
         indent ? "pl-8" : "pl-2"
-      } ${active ? "bg-active font-bold text-accent" : "text-fg hover:bg-hover"} ${count && !active ? "font-bold" : ""} ${bold ? "font-bold" : ""}`}
+      } ${active ? "bg-active font-bold text-accent" : "text-fg hover:bg-hover"} ${count && !active && !quiet ? "font-bold" : ""} ${bold ? "font-bold" : ""}`}
     >
       {icon}
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -172,6 +191,92 @@ export function SidebarPanel({ sidebar, scope, actions }: { sidebar: Sidebar | n
 
         {sidebar && !sidebar.unfiled.length && !sidebar.folders.length && (
           <p className="px-5 py-6 text-sm leading-relaxed text-muted">No feeds yet. Use “Add feed” to follow a site, or import an OPML file in Settings.</p>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+export type SavedActions = {
+  select: (scope: Scope) => void;
+  newTag: () => void;
+  manageTags: () => void;
+  tagMenu: (tag: Tag) => MenuItem[];
+};
+
+const headerButton = "rounded-md p-1.5 text-muted hover:bg-hover hover:text-fg";
+
+/** Replaces the feed sidebar while a Saved view (Read later, Archive, tags) is open. */
+export function SavedPanel({
+  sidebar,
+  scope,
+  actions,
+}: {
+  sidebar: Sidebar | null;
+  scope: Scope;
+  actions: SavedActions;
+}) {
+  const tags = sidebar?.tags ?? [];
+  return (
+    <aside className="flex h-full w-full flex-col bg-sidebar">
+      <header className="flex h-12 shrink-0 items-center gap-1 px-4 pt-1">
+        <h2 className="flex-1 text-[15px] font-bold">Saved</h2>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto pb-6 pt-1">
+        <Row
+          active={isActive(scope, "saved")}
+          onClick={() => actions.select({ kind: "saved" })}
+          icon={<Bookmark size={18} className="shrink-0 text-muted" />}
+          label="Read later"
+          count={sidebar?.savedCount ?? 0}
+          quiet
+        />
+        <Row
+          active={isActive(scope, "archive")}
+          onClick={() => actions.select({ kind: "archive" })}
+          icon={<Archive size={18} className="shrink-0 text-muted" />}
+          label="Archive"
+          count={sidebar?.archivedCount ?? 0}
+          quiet
+        />
+
+        <div className="mx-4 my-3 border-t border-line" />
+
+        <div className="flex h-10 items-center gap-1 px-4">
+          <h2 className="flex-1 text-[15px] font-bold">Tags</h2>
+          <button type="button" title="Manage tags" onClick={actions.manageTags} className={headerButton}>
+            <Settings size={18} />
+          </button>
+          <button type="button" title="New tag" onClick={actions.newTag} className={headerButton}>
+            <TagPlus size={18} />
+          </button>
+        </div>
+
+        <Row
+          active={isActive(scope, "tagged")}
+          onClick={() => actions.select({ kind: "tagged" })}
+          icon={<ListChecks size={18} className="shrink-0 text-muted" />}
+          label="All tagged articles"
+          count={0}
+          quiet
+        />
+        {tags.map((t) => (
+          <Row
+            key={t.id}
+            active={isActive(scope, "tag", t.id)}
+            onClick={() => actions.select({ kind: "tag", id: t.id })}
+            icon={<TagIcon size={18} className="shrink-0 text-muted" />}
+            label={t.name}
+            count={t.count}
+            quiet
+            menu={actions.tagMenu(t)}
+          />
+        ))}
+        {sidebar && !tags.length && (
+          <p className="px-5 py-3 text-sm leading-relaxed text-muted">
+            No tags yet. Use the tag button above an article, or an automation rule, to tag articles.
+          </p>
         )}
       </div>
     </aside>

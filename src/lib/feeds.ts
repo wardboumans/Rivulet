@@ -389,11 +389,16 @@ function retentionCutoff(): number | null {
   return days && days > 0 ? Date.now() - days * 86400000 : null;
 }
 
-/** Delete read, unsaved articles older than the retention window. */
+/** Delete read articles older than the retention window, unless they're saved, archived or tagged. */
 export function purgeOld() {
   const cutoff = retentionCutoff();
   if (!cutoff) return;
-  getDb().prepare("DELETE FROM articles WHERE is_read = 1 AND is_saved = 0 AND published_at < ?").run(cutoff);
+  getDb()
+    .prepare(
+      `DELETE FROM articles WHERE is_read = 1 AND is_saved = 0 AND published_at < ?
+         AND archived_at IS NULL AND id NOT IN (SELECT article_id FROM article_tags)`,
+    )
+    .run(cutoff);
 }
 
 // Register the newest refreshAll for the background scheduler. In `next dev` the scheduler keeps

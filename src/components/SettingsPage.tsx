@@ -784,6 +784,7 @@ function NotificationsSection({
 const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous article"],
   ["s", "Save for later"],
+  ["e", "Move to / remove from Archive"],
   ["m", "Toggle read"],
   ["v", "Open original"],
   ["f", "Toggle full article"],

@@ -8,6 +8,7 @@ import type {
   LinkedAutomations,
   SidebarFolder,
 } from "@/lib/types";
+import { OutputFeedSection } from "./OutputFeed";
 import {
   Dialog,
   dangerButton,
@@ -254,5 +255,91 @@ export function OpmlTools({ onImported }: { onImported: () => void }) {
       </div>
       {msg && <p className="mt-3 text-sm text-muted">{msg}</p>}
     </div>
+  );
+}
+
+/** Folder name and its public RSS output feed. `onChanged` refreshes the sidebar. */
+export function FolderPropertiesDialog({
+  folder,
+  onClose,
+  onChanged,
+}: {
+  folder: SidebarFolder;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState(folder.name);
+  const [outputFeed, setOutputFeed] = useState(!!folder.feedToken);
+  const [token, setToken] = useState(folder.feedToken);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const patch = (json: Record<string, unknown>) =>
+    api<{ feedToken: string | null }>(`/api/folders/${folder.id}`, {
+      method: "PATCH",
+      json,
+    });
+
+  async function save() {
+    setBusy(true);
+    setErr("");
+    try {
+      const saved = await patch({ name: name.trim(), outputFeed });
+      onChanged();
+      // This save created the feed link: stay open so it can be copied.
+      if (saved.feedToken && !token) {
+        setToken(saved.feedToken);
+        setBusy(false);
+      } else onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not save");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog title="Folder properties" onClose={onClose} width={520}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+        className="space-y-5"
+      >
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-semibold">Name</span>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className={inputClass}
+          />
+        </label>
+        <OutputFeedSection
+          kind="folder"
+          description="A public feed of the newest articles from every feed in this folder."
+          enabled={outputFeed}
+          onEnabled={setOutputFeed}
+          token={token}
+          onRegenerate={async () => {
+            setToken((await patch({ regenerateToken: true })).feedToken);
+            onChanged();
+          }}
+        />
+        {err && <p className="text-sm text-danger">{err}</p>}
+        <div className="flex justify-end gap-2 border-t border-line pt-4">
+          <button
+            type="submit"
+            disabled={busy || !name.trim()}
+            className={primaryButton}
+          >
+            {busy && <Loader2 size={15} className="animate-spin" />} Save
+          </button>
+          <button type="button" onClick={onClose} className={secondaryButton}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
