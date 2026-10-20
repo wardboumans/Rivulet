@@ -17,6 +17,7 @@ export async function PUT(req: Request) {
   const patch: { [K in keyof Settings]?: Settings[K] | null } = {};
   if (b.refreshIntervalMinutes !== undefined) patch.refreshIntervalMinutes = Math.max(5, Math.round(Number(b.refreshIntervalMinutes)) || 30);
   if (b.retentionDays !== undefined) patch.retentionDays = Math.max(0, Math.round(Number(b.retentionDays)) || 0);
+  if (b.youtubeRetentionDays !== undefined) patch.youtubeRetentionDays = Math.max(0, Math.round(Number(b.youtubeRetentionDays)) || 0);
   if (typeof b.openrouterModel === "string" && b.openrouterModel.trim()) patch.openrouterModel = b.openrouterModel.trim();
   if (typeof b.autoFullText === "boolean") patch.autoFullText = b.autoFullText;
   // null, empty or identical to the default all mean "use the default" (so future default changes apply).

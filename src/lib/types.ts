@@ -98,6 +98,7 @@ export type NewArticlesCheck = { newCount: number; unread: number };
 export type AppSettings = {
   refreshIntervalMinutes: number;
   retentionDays: number;
+  youtubeRetentionDays: number;
   openrouterModel: string;
   autoFullText: boolean;
   summaryPrompt: string;

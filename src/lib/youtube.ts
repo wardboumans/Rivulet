@@ -7,6 +7,11 @@ import { fetchText } from "./http";
  */
 
 const FEED = "https://www.youtube.com/feeds/videos.xml";
+
+/** SQL LIKE pattern matching the feed_url of YouTube channel and playlist feeds. */
+export const YOUTUBE_FEED_LIKE = "%youtube.com/feeds/videos.xml%";
+
+export const isYouTubeFeed = (feedUrl: string) => /^https?:\/\/(www\.)?youtube\.com\/feeds\/videos\.xml/.test(feedUrl);
 const CHANNEL_ID = /^UC[\w-]{22}$/;
 const PLAYLIST_ID = /^(PL|UU|FL|OL|LL|RD|UL|PU)[\w-]{10,}$/;
 

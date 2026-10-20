@@ -3,6 +3,8 @@ import { getDb } from "./db";
 export type Settings = {
   refreshIntervalMinutes: number;
   retentionDays: number;
+  /** Retention for YouTube feeds, separate from other feeds; 0 keeps every video. */
+  youtubeRetentionDays: number;
   openrouterModel: string;
   autoFullText: boolean;
   /** System prompt sent to the model for summaries. */
@@ -15,6 +17,7 @@ export const DEFAULT_SUMMARY_PROMPT =
 export const DEFAULT_SETTINGS: Settings = {
   refreshIntervalMinutes: 30,
   retentionDays: 60,
+  youtubeRetentionDays: 180,
   openrouterModel: process.env.OPENROUTER_MODEL || "openrouter/auto",
   autoFullText: true,
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,

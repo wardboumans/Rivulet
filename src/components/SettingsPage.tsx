@@ -357,6 +357,7 @@ function GeneralSection({
   const [form, setForm] = useState({
     refreshIntervalMinutes: settings.refreshIntervalMinutes,
     retentionDays: settings.retentionDays,
+    youtubeRetentionDays: settings.youtubeRetentionDays,
     autoFullText: settings.autoFullText,
   });
   const [busy, setBusy] = useState(false);
@@ -425,7 +426,29 @@ function GeneralSection({
                 className={inputClass}
               />
               <span className="mt-1 block text-xs text-muted">
-                0 keeps everything. Saved articles are never removed.
+                0 keeps everything. Saved, archived and tagged articles are
+                never removed. A new feed starts with everything it lists.
+              </span>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold">
+                Keep read YouTube videos for (days)
+              </span>
+              <input
+                type="number"
+                min={0}
+                value={form.youtubeRetentionDays}
+                onChange={(e) => (
+                  setSaved(false),
+                  setForm({
+                    ...form,
+                    youtubeRetentionDays: Number(e.target.value),
+                  })
+                )}
+                className={inputClass}
+              />
+              <span className="mt-1 block text-xs text-muted">
+                For YouTube channels and playlists. 0 keeps every video.
               </span>
             </label>
           </div>

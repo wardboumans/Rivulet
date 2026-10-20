@@ -7,7 +7,7 @@ import { purgeRuleMatches, runRulesForNewArticles } from "./automations";
 import { applyFiltersToArticles, reapplyFilters } from "./filters";
 import { indexArticle } from "./search";
 import { getSettings } from "./settings";
-import { youTubeArticleHtml, youTubeVideoId } from "./youtube";
+import { YOUTUBE_FEED_LIKE, isYouTubeFeed, youTubeArticleHtml, youTubeVideoId } from "./youtube";
 import type { FolderAutomations, LinkedAutomations } from "./types";
 
 type MediaAttr = { $?: { url?: string; medium?: string; type?: string } };
@@ -146,8 +146,15 @@ function itemDate(item: Item, now: number): number {
   return Math.min(t, now);
 }
 
-/** Parse feed XML and insert new articles. Returns the number of new articles. */
-async function storeItems(feed: FeedRow, xml: string): Promise<{ added: number; ids: number[]; title?: string; siteUrl?: string }> {
+/**
+ * Parse feed XML and insert new articles. Returns the number of new articles. `initial` (adding
+ * the feed) imports every item, however old; retention applies from the next refresh on.
+ */
+async function storeItems(
+  feed: FeedRow,
+  xml: string,
+  { initial = false }: { initial?: boolean } = {},
+): Promise<{ added: number; ids: number[]; title?: string; siteUrl?: string }> {
   const parsed = await parser.parseString(xml);
   const db = getDb();
   const now = Date.now();
@@ -163,9 +170,10 @@ async function storeItems(feed: FeedRow, xml: string): Promise<{ added: number; 
     "UPDATE articles SET content = ?, excerpt = ? WHERE feed_id = ? AND guid = ? AND COALESCE(content, '') = ''",
   );
 
-  // Items older than the retention window are skipped: purgeOld() deletes read ones, and without
-  // their rows INSERT OR IGNORE would re-add them as unread on the next fetch.
-  const cutoff = retentionCutoff();
+  // On refresh, items older than the retention window are skipped: purgeOld() deletes read ones,
+  // and without their rows INSERT OR IGNORE would re-add them as unread on the next fetch. A new
+  // feed imports everything, so it never starts out empty.
+  const cutoff = initial ? null : retentionCutoff(isYouTubeFeed(feed.feed_url));
 
   let added = 0;
   const toIndex: { id: number; title: string; content: string }[] = [];
@@ -262,7 +270,7 @@ export async function addFeed(input: string, folderId: number | null, titleOverr
   );
   let feed = db.prepare("SELECT * FROM feeds WHERE id = ?").get(id) as FeedRow;
   try {
-    const { added, title, siteUrl } = await storeItems(feed, found.xml);
+    const { added, title, siteUrl } = await storeItems(feed, found.xml, { initial: true });
     const icon = opts.iconUrl || (await resolveIcon(siteUrl, found.pageHtml));
     db.prepare(
       "UPDATE feeds SET title = ?, site_url = ?, icon_url = ?, icon_checked = 1, etag = ?, last_modified = ?, last_fetched_at = ?, last_error = NULL WHERE id = ?",
@@ -396,22 +404,30 @@ export function deleteFolder(folderId: number, deleteFeeds: boolean) {
   reapplyFilters();
 }
 
-/** Publish-date cutoff for retention, or null when articles are kept forever. */
-function retentionCutoff(): number | null {
-  const days = getSettings().retentionDays;
+/** Publish-date cutoff for retention, or null when articles are kept forever. YouTube feeds have their own setting. */
+function retentionCutoff(youtube = false): number | null {
+  const s = getSettings();
+  const days = youtube ? s.youtubeRetentionDays : s.retentionDays;
   return days && days > 0 ? Date.now() - days * 86400000 : null;
 }
 
-/** Delete read articles older than the retention window, unless they're saved, archived or tagged. */
+/**
+ * Delete read articles older than the retention window, unless they're saved, archived or tagged.
+ * YouTube feeds use their own window.
+ */
 export function purgeOld() {
-  const cutoff = retentionCutoff();
-  if (!cutoff) return;
-  getDb()
-    .prepare(
-      `DELETE FROM articles WHERE is_read = 1 AND is_saved = 0 AND published_at < ?
-         AND archived_at IS NULL AND id NOT IN (SELECT article_id FROM article_tags)`,
-    )
-    .run(cutoff);
+  const purge = (cutoff: number | null, youtube: boolean) => {
+    if (!cutoff) return;
+    getDb()
+      .prepare(
+        `DELETE FROM articles WHERE is_read = 1 AND is_saved = 0 AND published_at < ?
+           AND archived_at IS NULL AND id NOT IN (SELECT article_id FROM article_tags)
+           AND feed_id ${youtube ? "IN" : "NOT IN"} (SELECT id FROM feeds WHERE feed_url LIKE ?)`,
+      )
+      .run(cutoff, YOUTUBE_FEED_LIKE);
+  };
+  purge(retentionCutoff(), false);
+  purge(retentionCutoff(true), true);
 }
 
 // Register the newest refreshAll for the background scheduler. In `next dev` the scheduler keeps

@@ -174,7 +174,7 @@ export function YouTubePage({ sidebar, defaultFolderId, onAdded }: AddPageProps)
             <span className="mt-1.5 block text-xs leading-relaxed text-muted">
               A channel link or <code>@handle</code>, a playlist or show link (or a video link with <code>list=</code>), or a channel or playlist ID. New
               videos arrive as articles with the player and description. YouTube’s feeds list the newest 15 videos, so older ones in a long
-              playlist don’t appear.
+              playlist don’t appear. How long read videos are kept is set under Settings → General.
             </span>
           </label>
           {folder.field}
