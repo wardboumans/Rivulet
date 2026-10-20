@@ -7,6 +7,7 @@ A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.
 ## Features
 
 - **Feeds and folders** with unread counts, in a three-pane layout
+- **YouTube channels and playlists**: paste a link or `@handle`; videos arrive with an embedded player and their description
 - **Full article** fetch (Readability) for feeds that only send a teaser (works on most, not all, websites)
 - **AI summaries** via OpenRouter, cached per article
 - **Read later**, an **archive** that keeps articles forever, and **full-text search**

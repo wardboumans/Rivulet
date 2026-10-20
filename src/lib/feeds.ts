@@ -7,6 +7,7 @@ import { purgeRuleMatches, runRulesForNewArticles } from "./automations";
 import { applyFiltersToArticles, reapplyFilters } from "./filters";
 import { indexArticle } from "./search";
 import { getSettings } from "./settings";
+import { youTubeArticleHtml, youTubeVideoId } from "./youtube";
 import type { FolderAutomations, LinkedAutomations } from "./types";
 
 type MediaAttr = { $?: { url?: string; medium?: string; type?: string } };
@@ -14,7 +15,7 @@ type Item = Parser.Item & {
   "content:encoded"?: string;
   mediaContent?: MediaAttr[];
   mediaThumbnail?: MediaAttr | MediaAttr[];
-  mediaGroup?: { "media:content"?: MediaAttr[]; "media:thumbnail"?: MediaAttr[] };
+  mediaGroup?: { "media:content"?: MediaAttr[]; "media:thumbnail"?: MediaAttr[]; "media:description"?: unknown };
   author?: string;
   "dc:creator"?: string;
   id?: string;
@@ -156,6 +157,11 @@ async function storeItems(feed: FeedRow, xml: string): Promise<{ added: number; 
     INSERT OR IGNORE INTO articles (feed_id, guid, url, title, author, content, excerpt, image_url, published_at, created_at)
     VALUES (@feed_id, @guid, @url, @title, @author, @content, @excerpt, @image_url, @published_at, @created_at)
   `);
+  // YouTube videos stored before Rivulet built their player + description have an empty body;
+  // fill it in when they show up in the feed again.
+  const fillVideo = db.prepare(
+    "UPDATE articles SET content = ?, excerpt = ? WHERE feed_id = ? AND guid = ? AND COALESCE(content, '') = ''",
+  );
 
   // Items older than the retention window are skipped: purgeOld() deletes read ones, and without
   // their rows INSERT OR IGNORE would re-add them as unread on the next fetch.
@@ -169,7 +175,11 @@ async function storeItems(feed: FeedRow, xml: string): Promise<{ added: number; 
       if (cutoff && publishedAt < cutoff) continue;
       const rawLink = text(item.link);
       const link = rawLink ? safeUrl(rawLink, siteUrl ?? feed.feed_url) : undefined;
-      const rawHtml = text(item["content:encoded"]) || text(item.content) || text(item.summary) || "";
+      // YouTube entries have no body: build one from the video (player + description).
+      const videoId = youTubeVideoId(text(item.id), link ?? null);
+      const rawHtml = videoId
+        ? youTubeArticleHtml(videoId, text(item.mediaGroup?.["media:description"]))
+        : text(item["content:encoded"]) || text(item.content) || text(item.summary) || "";
       const plain = htmlToText(rawHtml);
       const rawTitle = text(item.title);
       const guid =
@@ -191,6 +201,8 @@ async function storeItems(feed: FeedRow, xml: string): Promise<{ added: number; 
       if (r.changes) {
         added++;
         toIndex.push({ id: Number(r.lastInsertRowid), title, content });
+      } else if (videoId && content) {
+        fillVideo.run(content, plain.slice(0, 400), feed.id, guid);
       }
     }
     for (const a of toIndex) indexArticle(a.id, a.title, a.content);
@@ -235,7 +247,8 @@ async function resolveIcon(siteUrl: string | undefined, pageHtml?: string): Prom
   }
 }
 
-export async function addFeed(input: string, folderId: number | null, titleOverride?: string) {
+/** `iconUrl` replaces the icon found on the site (e.g. a YouTube channel's avatar). */
+export async function addFeed(input: string, folderId: number | null, titleOverride?: string, opts: { iconUrl?: string | null } = {}) {
   const db = getDb();
   const found = await discoverFeed(input);
   const existing = db.prepare("SELECT * FROM feeds WHERE feed_url = ?").get(found.feedUrl) as FeedRow | undefined;
@@ -250,7 +263,7 @@ export async function addFeed(input: string, folderId: number | null, titleOverr
   let feed = db.prepare("SELECT * FROM feeds WHERE id = ?").get(id) as FeedRow;
   try {
     const { added, title, siteUrl } = await storeItems(feed, found.xml);
-    const icon = await resolveIcon(siteUrl, found.pageHtml);
+    const icon = opts.iconUrl || (await resolveIcon(siteUrl, found.pageHtml));
     db.prepare(
       "UPDATE feeds SET title = ?, site_url = ?, icon_url = ?, icon_checked = 1, etag = ?, last_modified = ?, last_fetched_at = ?, last_error = NULL WHERE id = ?",
     ).run(titleOverride || title || new URL(found.feedUrl).hostname, siteUrl ?? null, icon, found.etag, found.lastModified, Date.now(), id);

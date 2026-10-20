@@ -73,6 +73,9 @@ function SummaryText({ text }: { text: string }) {
   );
 }
 
+/** Articles built from a YouTube video (see lib/youtube.ts) start with its embedded player. */
+const isVideo = (html: string) => /^<iframe[^>]+youtube-nocookie\.com\/embed\//.test(html);
+
 export function ArticleView({
   item,
   settings,
@@ -128,8 +131,9 @@ export function ArticleView({
       setDetail(d);
       setSummary(d.summary);
       if (d.fullContent) setShowFull(true);
-      // The feed only gave us a teaser: pull the full article automatically.
-      else if (autoFullText && d.url && d.contentLength < 600)
+      // The feed only gave us a teaser: pull the full article automatically. YouTube items are
+      // a player plus description; the watch page has nothing more to extract.
+      else if (autoFullText && d.url && d.contentLength < 600 && !isVideo(d.content))
         loadFullText(d.id, () => cancelled);
     });
     return () => {
@@ -243,7 +247,7 @@ export function ArticleView({
       ? detail.fullContent
       : detail.content
     : "";
-  const showHero = !!item.imageUrl && !!detail && !/<img\b/i.test(html);
+  const showHero = !!item.imageUrl && !!detail && !/<(img|iframe)\b/i.test(html);
   const site = hostname(detail?.siteUrl ?? item.url);
   const hasKey = settings?.hasOpenRouterKey ?? false;
 

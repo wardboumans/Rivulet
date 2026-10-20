@@ -16,11 +16,19 @@ export type FetchResult = {
 /** Fetch a URL as text with a timeout, a size cap, and charset detection (header or XML/HTML declaration). */
 export async function fetchText(
   url: string,
-  opts: { etag?: string | null; lastModified?: string | null; accept?: string; timeoutMs?: number; maxBytes?: number } = {},
+  opts: {
+    etag?: string | null;
+    lastModified?: string | null;
+    accept?: string;
+    timeoutMs?: number;
+    maxBytes?: number;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<FetchResult> {
   const headers: Record<string, string> = {
     "User-Agent": USER_AGENT,
     Accept: opts.accept ?? "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, text/html;q=0.8, */*;q=0.5",
+    ...opts.headers,
   };
   if (opts.etag) headers["If-None-Match"] = opts.etag;
   if (opts.lastModified) headers["If-Modified-Since"] = opts.lastModified;
