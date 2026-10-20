@@ -9,15 +9,17 @@ A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.
 - **Feeds and folders** with unread counts, in a three-pane layout
 - **Full article** fetch (Readability) for feeds that only send a teaser (works on most, not all, websites)
 - **AI summaries** via OpenRouter, cached per article
-- **Saved for later** and **full-text search**
+- **Read later**, an **archive** that keeps articles forever, and **full-text search**
+- **Tags**: tag articles from the reader, with suggestions from your existing tags and (with an OpenRouter key) AI; browse them under **Saved**
+- **Output feeds**: publish a tag or folder as a public feed in RSS, JSON Feed or OPML
 - **Monitoring feeds**: saved keyword searches that act like feeds
-- **Automations**: email (SendGrid) or push (Pushover) when a new article matches your conditions
+- **Automations**: email (SendGrid), push (Pushover) or tag automatically when a new article matches your conditions
 - **Filters**: hide matching articles, or keep only matching ones, per feed or folder
 - **Read state**: marked read on open; mark a whole section read, or only older items
 - **OPML** import and export
 - **Background refresh** with conditional GET and automatic cleanup of old read articles
 - **Light and dark themes**, on desktop and mobile
-- **Keyboard shortcuts** (`j`/`k`, `s`, `m`, `/` and more)
+- **Keyboard shortcuts** (`j`/`k`, `s`, `e`, `m`, `/` and more)
 - **Optional password**
 
 ## Running
@@ -35,7 +37,23 @@ npm run build
 npm start
 ```
 
-The database is created at `data/reader.db` (override with `DATABASE_PATH`). Back up that file to keep your feeds, read state and saved articles.
+The database is created at `data/reader.db` (override with `DATABASE_PATH`) and upgraded automatically on start. Back up that file to keep your feeds, read state, saved, archived and tagged articles.
+
+## Tags and output feeds
+
+Use the tag button above an article to add tags: search, click to toggle, or type a new name and press Enter. **Suggested tags** offers your existing tags that appear in the article and, with an OpenRouter key, tags suggested by the AI model. Rules can tag articles too: add an **Assign tag** action, and use **Run rule** to tag articles you already have.
+
+The **Saved** button in the rail switches the sidebar to Read later, Archive and your tags. Archived articles (button above the article, or `e`) are never removed by retention; neither are tagged ones.
+
+A tag (Edit tag) or a folder (Folder properties) can have an **output feed**: a public link, for a blog or another reader, that works without the password. The same link serves three formats:
+
+| URL                                  | Format                                              |
+| ------------------------------------ | --------------------------------------------------- |
+| `/feeds/<tag\|folder>/<token>`       | RSS 2.0 (`.xml` also works)                         |
+| `/feeds/<tag\|folder>/<token>.json`  | JSON Feed 1.1                                       |
+| `/feeds/<tag\|folder>/<token>.opml`  | OPML: a folder's feeds, or a tag's articles as links |
+
+Anyone with the link can read the feed; **New link** in the dialog replaces it. Set `APP_URL` when running behind a proxy so links inside the feeds use your public address.
 
 ## Docker
 
@@ -83,15 +101,19 @@ Environment variables still work as a fallback for those keys, and are the only 
 | `PUSHOVER_USER_KEY`  | Your Pushover user (or group) key                                    |
 | `APP_PASSWORD`       | Requires a password to use the app                                   |
 | `DATABASE_PATH`      | SQLite file location                                                 |
+| `APP_URL`            | Public base URL, used for links in output feeds                      |
 | `DISABLE_SCHEDULER`  | `1` turns off background refresh                                     |
 
 ## Layout
 
 ```
 src/
-  app/api/…        route handlers (articles, feeds, folders, monitors, rules, filters, opml, refresh, settings, login)
-  components/      client UI (AppShell holds state; Rail, SidebarPanel, ArticleList, ArticleView, Dialogs)
-  lib/db.ts        schema + connection singleton
+  app/api/…        route handlers (articles, feeds, folders, monitors, rules, filters, tags, opml, refresh, settings, login)
+  app/feeds/…      public tag/folder output feeds
+  components/      client UI (AppShell holds state; Rail, SidebarPanel, ArticleList, ArticleView, Tags, Dialogs)
+  lib/db.ts        baseline schema, versioned migrations, connection singleton
+  lib/tags.ts      tags, article tagging, tag suggestions
+  lib/outputFeeds.ts  RSS / JSON Feed / OPML output for tags and folders
   lib/feeds.ts     discovery, parsing, refresh, retention
   lib/queries.ts   sidebar counts, article listing, mark-read
   lib/fulltext.ts  Readability extraction
