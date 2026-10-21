@@ -8,6 +8,8 @@ A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.
 
 - **Feeds and folders** with unread counts, in a three-pane layout
 - **YouTube channels and playlists**: paste a link or `@handle`; videos arrive with an embedded player and their description
+- **Google News searches**: follow any search (quotes, `intitle:`, `OR`, `-`, `site:`, `when:`) in your language and region, with a live preview of the results
+- **Feed properties**: addresses, folder, activity and a refresh log (latency, status, errors) per feed
 - **Full article** fetch (Readability) for feeds that only send a teaser (works on most, not all, websites)
 - **AI summaries** via OpenRouter, cached per article
 - **Read later**, an **archive** that keeps articles forever, and **full-text search**
@@ -18,7 +20,7 @@ A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.
 - **Filters**: hide matching articles, or keep only matching ones, per feed or folder
 - **Read state**: marked read on open; mark a whole section read, or only older items
 - **OPML** import and export
-- **Background refresh** with conditional GET and automatic cleanup of old read articles
+- **Background refresh** with conditional GET, retries for temporary failures, and automatic cleanup of old read articles
 - **Light and dark themes**, on desktop and mobile
 - **Keyboard shortcuts** (`j`/`k`, `s`, `e`, `m`, `/` and more)
 - **Optional password**
@@ -109,13 +111,15 @@ Environment variables still work as a fallback for those keys, and are the only 
 
 ```
 src/
-  app/api/…        route handlers (articles, feeds, folders, monitors, rules, filters, tags, opml, refresh, settings, login)
+  app/api/…        route handlers (articles, feeds, folders, monitors, rules, filters, tags, google-news, opml, refresh, settings, login)
   app/feeds/…      public tag/folder output feeds
-  components/      client UI (AppShell holds state; Rail, SidebarPanel, ArticleList, ArticleView, Tags, Dialogs)
+  components/      client UI (AppShell holds state; Rail, SidebarPanel, ArticleList, ArticleView, AddNew, FeedProperties, Tags, Dialogs)
   lib/db.ts        baseline schema, versioned migrations, connection singleton
   lib/tags.ts      tags, article tagging, tag suggestions
   lib/outputFeeds.ts  RSS / JSON Feed / OPML output for tags and folders
-  lib/feeds.ts     discovery, parsing, refresh, retention
+  lib/feeds.ts     discovery, parsing, refresh (retries, refresh log), retention
+  lib/youtube.ts   YouTube channel/playlist feeds and video articles
+  lib/googleNews.ts  Google News search feeds and editions
   lib/queries.ts   sidebar counts, article listing, mark-read
   lib/fulltext.ts  Readability extraction
   lib/summarize.ts OpenRouter streaming
