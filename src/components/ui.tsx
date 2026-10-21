@@ -236,11 +236,14 @@ export function Dialog({
   onClose,
   children,
   width = 460,
+  header,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   width?: number;
+  /** Replaces the plain title heading (`title` still labels the dialog). */
+  header?: ReactNode;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -260,7 +263,7 @@ export function Dialog({
         style={{ maxWidth: width }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-4 text-lg font-semibold">{title}</h2>
+        {header ?? <h2 className="mb-4 text-lg font-semibold">{title}</h2>}
         {children}
       </div>
     </div>

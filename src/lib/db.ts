@@ -170,6 +170,24 @@ ALTER TABLE folders ADD COLUMN feed_token TEXT;
 CREATE UNIQUE INDEX idx_folders_feed_token ON folders(feed_token) WHERE feed_token IS NOT NULL;
 `,
   },
+  {
+    version: 5,
+    sql: `
+-- Refresh log: one row per fetch of a feed (lib/feeds.ts). status is the HTTP status, NULL when
+-- no response arrived (network error, timeout). error is NULL on success. Trimmed per feed.
+CREATE TABLE feed_fetches (
+  id INTEGER PRIMARY KEY,
+  feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+  fetched_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  status INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  new_articles INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX idx_feed_fetches_feed ON feed_fetches(feed_id, fetched_at);
+`,
+  },
 ];
 
 const BASELINE_VERSION = 1;

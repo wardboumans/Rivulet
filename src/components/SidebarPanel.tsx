@@ -30,6 +30,8 @@ export type SidebarActions = {
   refreshAll: () => void;
   openSettings: () => void;
   feedMenu: (feed: SidebarFeed) => MenuItem[];
+  /** Opens the feed's refresh log (from the error icon). */
+  feedLog: (feed: SidebarFeed) => void;
   folderMenu: (folder: SidebarFolder) => MenuItem[];
   monitorMenu: (monitor: SidebarMonitor) => MenuItem[];
 };
@@ -44,6 +46,7 @@ function Row({
   indent,
   menu,
   error,
+  onErrorClick,
   quiet,
 }: {
   active: boolean;
@@ -55,6 +58,7 @@ function Row({
   indent?: boolean;
   menu?: MenuItem[];
   error?: string | null;
+  onErrorClick?: () => void;
   /** The count is a total, not unread: don't bold the row for it. */
   quiet?: boolean;
 }) {
@@ -71,9 +75,18 @@ function Row({
       {icon}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {error && (
-        <span title={`Last refresh failed: ${error}`} className="text-danger">
+        <button
+          type="button"
+          title={`Last refresh failed: ${error}`}
+          aria-label="Last refresh failed, show refresh log"
+          onClick={(e) => {
+            e.stopPropagation();
+            onErrorClick?.();
+          }}
+          className="rounded p-0.5 text-danger hover:bg-active"
+        >
           <AlertTriangle size={14} />
-        </span>
+        </button>
       )}
       {menu ? (
         <HoverMenu label={`${label} options`} items={menu} count={count} countClass={active ? "text-accent" : ""} />
@@ -115,6 +128,7 @@ export function SidebarPanel({ sidebar, scope, actions }: { sidebar: Sidebar | n
       count={f.unread}
       indent={indent}
       error={f.lastError}
+      onErrorClick={() => actions.feedLog(f)}
       menu={actions.feedMenu(f)}
     />
   );

@@ -1,5 +1,5 @@
 import { getDb } from "./db";
-import { isRefreshing } from "./feeds";
+import { feedAutomations, isRefreshing } from "./feeds";
 import {
   buildFtsQuery,
   getMonitor,
@@ -7,11 +7,13 @@ import {
   queryWhere,
 } from "./monitors";
 import { toFtsQuery } from "./search";
+import { getSettings } from "./settings";
 import { articleTags, listTags } from "./tags";
 import type {
   ArticleDetail,
   ArticleListItem,
   ArticlePage,
+  FeedProperties,
   MonitorPreview,
   NewArticlesCheck,
   MonitorQuery,
@@ -134,6 +136,82 @@ export function getSidebar(): Sidebar {
         .get() as { n: number }
     ).n,
     refreshing: isRefreshing(),
+  };
+}
+
+/** Details, article stats and the refresh log of one feed, or null if it doesn't exist. */
+export function feedProperties(id: number): FeedProperties | null {
+  const db = getDb();
+  const f = db
+    .prepare(
+      "SELECT id, folder_id, title, feed_url, site_url, icon_url, created_at, last_fetched_at, last_error FROM feeds WHERE id = ?",
+    )
+    .get(id) as
+    | {
+        id: number;
+        folder_id: number | null;
+        title: string;
+        feed_url: string;
+        site_url: string | null;
+        icon_url: string | null;
+        created_at: number;
+        last_fetched_at: number | null;
+        last_error: string | null;
+      }
+    | undefined;
+  if (!f) return null;
+
+  const where = scopeWhere({ kind: "feed", id });
+  const stats = db
+    .prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(a.is_read = 0), 0) AS unread, COALESCE(SUM(a.published_at >= ?), 0) AS week,
+              MAX(a.published_at) AS last
+       FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE ${where.sql}`,
+    )
+    .get(Date.now() - 7 * 86400000, ...where.params) as { n: number; unread: number; week: number; last: number | null };
+
+  const log = (
+    db
+      .prepare(
+        "SELECT id, fetched_at, duration_ms, status, attempts, new_articles, error FROM feed_fetches WHERE feed_id = ? ORDER BY id DESC LIMIT 100",
+      )
+      .all(id) as {
+      id: number;
+      fetched_at: number;
+      duration_ms: number;
+      status: number | null;
+      attempts: number;
+      new_articles: number;
+      error: string | null;
+    }[]
+  ).map((r) => ({
+    id: r.id,
+    fetchedAt: r.fetched_at,
+    durationMs: r.duration_ms,
+    status: r.status,
+    attempts: r.attempts,
+    newArticles: r.new_articles,
+    error: r.error,
+  }));
+
+  return {
+    id: f.id,
+    title: f.title,
+    feedUrl: f.feed_url,
+    siteUrl: f.site_url,
+    iconUrl: f.icon_url,
+    folderId: f.folder_id,
+    createdAt: f.created_at,
+    lastFetchedAt: f.last_fetched_at,
+    lastError: f.last_error,
+    articles: stats.n,
+    unread: stats.unread,
+    postsThisWeek: stats.week,
+    lastPostAt: stats.last,
+    // Same clamp as the scheduler (lib/scheduler.ts).
+    refreshIntervalMinutes: Math.max(5, getSettings().refreshIntervalMinutes || 30),
+    automations: feedAutomations(id),
+    log,
   };
 }
 

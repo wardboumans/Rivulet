@@ -47,12 +47,44 @@ export async function fetchText(
     size += value.byteLength;
     if (size > (opts.maxBytes ?? DEFAULT_MAX_BYTES)) {
       await reader.cancel();
-      throw new Error(`Response larger than ${Math.round((opts.maxBytes ?? DEFAULT_MAX_BYTES) / 1048576)} MB`);
+      throw new TooLargeError(`Response larger than ${Math.round((opts.maxBytes ?? DEFAULT_MAX_BYTES) / 1048576)} MB`);
     }
     chunks.push(value);
   }
   const buf = Buffer.concat(chunks);
   return { ...base, text: decode(buf, contentType) };
+}
+
+class TooLargeError extends Error {}
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Responses worth retrying: rate limited (429) or a server error (5xx). */
+export const isTransientStatus = (status: number) => status === 429 || status >= 500;
+
+/** Errors thrown by fetchText worth retrying: network errors and timeouts, not an oversized response. */
+export const isTransientError = (e: unknown) => !(e instanceof TooLargeError);
+
+/**
+ * fetchText with retries for transient failures: network errors, timeouts, 429 and 5xx.
+ * Other responses (including 4xx) come back as-is after the first attempt.
+ */
+export async function fetchTextWithRetry(
+  url: string,
+  opts: Parameters<typeof fetchText>[1] = {},
+  { attempts = 3, onRetry }: { attempts?: number; onRetry?: () => void } = {},
+): Promise<FetchResult> {
+  for (let attempt = 1; ; attempt++) {
+    const last = attempt >= attempts;
+    try {
+      const res = await fetchText(url, opts);
+      if (last || !isTransientStatus(res.status)) return res;
+    } catch (e) {
+      if (last || !isTransientError(e)) throw e;
+    }
+    onRetry?.();
+    await sleep(1000 * 2 ** (attempt - 1));
+  }
 }
 
 function decode(buf: Buffer, contentType: string): string {

@@ -6,6 +6,7 @@ import {
   Check,
   Filter as FilterIcon,
   FolderInput,
+  Info,
   LayoutList,
   Newspaper,
   Pencil,
@@ -43,6 +44,7 @@ import {
   RulesPage,
   type AutomateSection,
 } from "./Automations";
+import { FeedPropertiesDialog, type FeedPropertiesTab } from "./FeedProperties";
 import { FiltersPage } from "./Filters";
 import { ArticleView } from "./ArticleView";
 import {
@@ -82,6 +84,7 @@ type Mode =
 type DialogState =
   | null
   | { kind: "rename-feed"; feed: SidebarFeed }
+  | { kind: "feed-properties"; feedId: number; tab?: FeedPropertiesTab }
   | { kind: "folder-properties"; folder: SidebarFolder }
   | { kind: "delete-folder"; folder: SidebarFolder }
   | { kind: "new-folder"; moveFeedId?: number }
@@ -577,6 +580,34 @@ export function AppShell() {
     loadSidebar();
   };
 
+  const unfollowFeed = async (feed: { id: number; title: string }) => {
+    const lost = describeAutomations(
+      await api<LinkedAutomations>(`/api/feeds/${feed.id}`),
+    );
+    if (
+      !(await confirmDialog({
+        title: "Unfollow feed?",
+        message: (
+          <>
+            “{feed.title}” and all of its articles, including saved,
+            archived and tagged ones, will be deleted.
+            {lost && (
+              <span className="mt-3 block text-danger">
+                {lost} for this feed will also be deleted.
+              </span>
+            )}
+          </>
+        ),
+        confirmLabel: "Unfollow",
+        danger: true,
+      }))
+    )
+      return;
+    await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
+    if (scope.kind === "feed" && scope.id === feed.id) select({ kind: "all" });
+    reloadAll();
+  };
+
   const feedMenu = (feed: SidebarFeed): MenuItem[] => [
     {
       label: "Mark as read",
@@ -601,6 +632,11 @@ export function AppShell() {
       onSelect: () => setDialog({ kind: "rename-feed", feed }),
     },
     {
+      label: "Feed properties…",
+      icon: <Info size={14} />,
+      onSelect: () => setDialog({ kind: "feed-properties", feedId: feed.id }),
+    },
+    {
       label: "Filter articles…",
       icon: <FilterIcon size={14} />,
       onSelect: () =>
@@ -620,34 +656,7 @@ export function AppShell() {
       label: "Unfollow",
       icon: <Trash2 size={14} />,
       danger: true,
-      onSelect: async () => {
-        const lost = describeAutomations(
-          await api<LinkedAutomations>(`/api/feeds/${feed.id}`),
-        );
-        if (
-          !(await confirmDialog({
-            title: "Unfollow feed?",
-            message: (
-              <>
-                “{feed.title}” and all of its articles, including saved,
-                archived and tagged ones, will be deleted.
-                {lost && (
-                  <span className="mt-3 block text-danger">
-                    {lost} for this feed will also be deleted.
-                  </span>
-                )}
-              </>
-            ),
-            confirmLabel: "Unfollow",
-            danger: true,
-          }))
-        )
-          return;
-        await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
-        if (scope.kind === "feed" && scope.id === feed.id)
-          select({ kind: "all" });
-        reloadAll();
-      },
+      onSelect: () => unfollowFeed(feed),
     },
     { separator: true },
     { heading: "Move to" },
@@ -1037,6 +1046,8 @@ export function AppShell() {
         refreshAll: refreshFeeds,
         openSettings: () => setMode({ kind: "settings", section: "general" }),
         feedMenu,
+        feedLog: (feed) =>
+          setDialog({ kind: "feed-properties", feedId: feed.id, tab: "log" }),
         folderMenu,
         monitorMenu,
       }}
@@ -1292,6 +1303,25 @@ export function AppShell() {
         </>
       )}
       <ConfirmHost />
+      {dialog?.kind === "feed-properties" && (
+        <FeedPropertiesDialog
+          key={dialog.feedId}
+          feedId={dialog.feedId}
+          initialTab={dialog.tab}
+          folders={sidebar?.folders ?? []}
+          onClose={() => setDialog(null)}
+          onChanged={reloadAll}
+          onUnfollow={(feed) => {
+            // Close first so the confirmation isn't stacked on top of this dialog.
+            setDialog(null);
+            unfollowFeed(feed);
+          }}
+          onAutomate={(section) => {
+            setDialog(null);
+            setMode({ kind: "automate", section, presetFeedId: dialog.feedId });
+          }}
+        />
+      )}
       {dialog?.kind === "rename-feed" && (
         <PromptDialog
           title="Rename feed"

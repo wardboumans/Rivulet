@@ -1,7 +1,7 @@
 import Parser from "rss-parser";
 import crypto from "node:crypto";
 import { getDb } from "./db";
-import { fetchText } from "./http";
+import { fetchText, fetchTextWithRetry, isTransientError, isTransientStatus, sleep } from "./http";
 import { firstImage, htmlToText, sanitizeHtml } from "./html";
 import { purgeRuleMatches, runRulesForNewArticles } from "./automations";
 import { applyFiltersToArticles, reapplyFilters } from "./filters";
@@ -89,12 +89,14 @@ export function findIcon(html: string, base: string): string | undefined {
 }
 
 /** Given a site or feed URL, return the URL of an actual feed plus the fetched XML. */
-export async function discoverFeed(input: string): Promise<{ feedUrl: string; xml: string; etag: string | null; lastModified: string | null; pageHtml?: string }> {
+export async function discoverFeed(
+  input: string,
+): Promise<{ feedUrl: string; xml: string; status: number; etag: string | null; lastModified: string | null; pageHtml?: string }> {
   let url = input.trim();
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
   const res = await fetchText(url);
   if (res.status >= 400) throw new Error(`HTTP ${res.status} fetching ${url}`);
-  if (looksLikeFeed(res.text)) return { feedUrl: res.url, xml: res.text, etag: res.etag, lastModified: res.lastModified };
+  if (looksLikeFeed(res.text)) return { feedUrl: res.url, xml: res.text, status: res.status, etag: res.etag, lastModified: res.lastModified };
 
   const candidates = findFeedLinks(res.text, res.url);
   const origin = new URL(res.url).origin;
@@ -105,7 +107,7 @@ export async function discoverFeed(input: string): Promise<{ feedUrl: string; xm
     try {
       const r = await fetchText(c, { timeoutMs: 10000 });
       if (r.status < 400 && looksLikeFeed(r.text)) {
-        return { feedUrl: r.url, xml: r.text, etag: r.etag, lastModified: r.lastModified, pageHtml: res.text };
+        return { feedUrl: r.url, xml: r.text, status: r.status, etag: r.etag, lastModified: r.lastModified, pageHtml: res.text };
       }
     } catch {}
   }
@@ -258,6 +260,7 @@ async function resolveIcon(siteUrl: string | undefined, pageHtml?: string): Prom
 /** `iconUrl` replaces the icon found on the site (e.g. a YouTube channel's avatar). */
 export async function addFeed(input: string, folderId: number | null, titleOverride?: string, opts: { iconUrl?: string | null } = {}) {
   const db = getDb();
+  const startedAt = Date.now();
   const found = await discoverFeed(input);
   const existing = db.prepare("SELECT * FROM feeds WHERE feed_url = ?").get(found.feedUrl) as FeedRow | undefined;
   if (existing) return { feed: existing, added: 0, existed: true };
@@ -275,6 +278,7 @@ export async function addFeed(input: string, folderId: number | null, titleOverr
     db.prepare(
       "UPDATE feeds SET title = ?, site_url = ?, icon_url = ?, icon_checked = 1, etag = ?, last_modified = ?, last_fetched_at = ?, last_error = NULL WHERE id = ?",
     ).run(titleOverride || title || new URL(found.feedUrl).hostname, siteUrl ?? null, icon, found.etag, found.lastModified, Date.now(), id);
+    logFetch(id, { startedAt, status: found.status, attempts: 1, newArticles: added, error: null });
     feed = db.prepare("SELECT * FROM feeds WHERE id = ?").get(id) as FeedRow;
     return { feed, added, existed: false };
   } catch (e) {
@@ -283,13 +287,60 @@ export async function addFeed(input: string, folderId: number | null, titleOverr
   }
 }
 
-/** Fetch one feed (conditional GET) and store new items. Errors are recorded on the feed, not thrown. */
+const FETCH_LOG_PER_FEED = 100;
+
+function logFetch(
+  feedId: number,
+  entry: { startedAt: number; status: number | null; attempts: number; newArticles: number; error: string | null },
+) {
+  getDb()
+    .prepare("INSERT INTO feed_fetches (feed_id, fetched_at, duration_ms, status, attempts, new_articles, error) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(feedId, entry.startedAt, Date.now() - entry.startedAt, entry.status, entry.attempts, entry.newArticles, entry.error);
+}
+
+/** Keep the newest FETCH_LOG_PER_FEED log rows of each feed. */
+function purgeFetchLog() {
+  getDb()
+    .prepare(
+      `DELETE FROM feed_fetches WHERE id IN (
+         SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY id DESC) AS n FROM feed_fetches) WHERE n > ?
+       )`,
+    )
+    .run(FETCH_LOG_PER_FEED);
+}
+
+/**
+ * Fetch one feed (conditional GET) and store new items, retrying transient failures. Errors are
+ * recorded on the feed, not thrown. Every refresh (after retries) is written to the refresh log.
+ */
 export async function refreshFeed(feed: FeedRow): Promise<number> {
+  return (await fetchFeed(feed, { attempts: 3 })) as number;
+}
+
+const RETRY_LATER = Symbol("retry later");
+
+/**
+ * With `deferTransient`, a transient failure (network error, timeout, 429, 5xx) records nothing
+ * and returns RETRY_LATER, so refreshAll can retry it after the other feeds. `priorAttempts`
+ * counts those earlier attempts in the log.
+ */
+async function fetchFeed(
+  feed: FeedRow,
+  { attempts, deferTransient = false, priorAttempts = 0 }: { attempts: number; deferTransient?: boolean; priorAttempts?: number },
+): Promise<number | typeof RETRY_LATER> {
   const db = getDb();
+  const log = { startedAt: Date.now(), status: null as number | null, attempts: priorAttempts + 1 };
   try {
-    const res = await fetchText(feed.feed_url, { etag: feed.etag, lastModified: feed.last_modified });
+    const res = await fetchTextWithRetry(
+      feed.feed_url,
+      { etag: feed.etag, lastModified: feed.last_modified },
+      { attempts, onRetry: () => log.attempts++ },
+    );
+    log.status = res.status;
+    if (deferTransient && isTransientStatus(res.status)) return RETRY_LATER;
     if (res.status === 304) {
       db.prepare("UPDATE feeds SET last_fetched_at = ?, last_error = NULL WHERE id = ?").run(Date.now(), feed.id);
+      logFetch(feed.id, { ...log, newArticles: 0, error: null });
       return 0;
     }
     if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
@@ -306,32 +357,56 @@ export async function refreshFeed(feed: FeedRow): Promise<number> {
       // Delivery problems are logged on the rule, never recorded as a feed error.
       await runRulesForNewArticles(feed, ids).catch((e) => console.error("[rivulet] rules failed", e));
     }
+    logFetch(feed.id, { ...log, newArticles: added, error: null });
     return added;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    db.prepare("UPDATE feeds SET last_fetched_at = ?, last_error = ? WHERE id = ?").run(Date.now(), msg.slice(0, 300), feed.id);
+    // Only fetch errors are deferred (no response yet); parse and storage errors are final.
+    if (deferTransient && log.status === null && isTransientError(e)) return RETRY_LATER;
+    const msg = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    db.prepare("UPDATE feeds SET last_fetched_at = ?, last_error = ? WHERE id = ?").run(Date.now(), msg, feed.id);
+    // The feed may have been unfollowed while it was being fetched.
+    try {
+      logFetch(feed.id, { ...log, newArticles: 0, error: msg });
+    } catch {}
     return 0;
   }
 }
 
 const g = globalThis as unknown as { __refreshing?: Promise<number> };
 
-/** Refresh every feed with limited concurrency. Concurrent callers share one run. */
+/** Run `fn` over `items`, at most `limit` at a time. */
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) await fn(items[i++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/**
+ * Refresh every feed with limited concurrency. Concurrent callers share one run. Feeds that fail
+ * transiently are retried after all the others, so a slow or flaky server never holds up the rest.
+ */
 export function refreshAll(): Promise<number> {
   if (g.__refreshing) return g.__refreshing;
   g.__refreshing = (async () => {
     const feeds = getDb().prepare("SELECT * FROM feeds").all() as FeedRow[];
     let total = 0;
-    let i = 0;
-    const worker = async () => {
-      while (i < feeds.length) {
-        const f = feeds[i++];
-        total += await refreshFeed(f);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(6, feeds.length) }, worker));
+    const retry: FeedRow[] = [];
+    await pool(feeds, 6, async (f) => {
+      const r = await fetchFeed(f, { attempts: 1, deferTransient: true });
+      if (r === RETRY_LATER) retry.push(f);
+      else total += r;
+    });
+    if (retry.length) {
+      await sleep(2000);
+      await pool(retry, 6, async (f) => {
+        total += (await fetchFeed(f, { attempts: 2, priorAttempts: 1 })) as number;
+      });
+    }
     purgeOld();
     purgeRuleMatches();
+    purgeFetchLog();
     return total;
   })().finally(() => {
     g.__refreshing = undefined;

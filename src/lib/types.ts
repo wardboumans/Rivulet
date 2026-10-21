@@ -47,6 +47,37 @@ export type LinkedAutomations = { rules: { id: number; name: string }[]; filters
 /** What deleting a folder removes: its own rules and filters, and (if its feeds go too) theirs. */
 export type FolderAutomations = { folder: LinkedAutomations; feeds: LinkedAutomations };
 
+/** One refresh of a feed. `status` is the HTTP status, null when no response arrived; `error` is null on success. */
+export type FeedFetch = {
+  id: number;
+  fetchedAt: number;
+  durationMs: number;
+  status: number | null;
+  attempts: number;
+  newArticles: number;
+  error: string | null;
+};
+
+/** Everything the feed properties dialog shows. Article counts exclude filtered articles. */
+export type FeedProperties = {
+  id: number;
+  title: string;
+  feedUrl: string;
+  siteUrl: string | null;
+  iconUrl: string | null;
+  folderId: number | null;
+  createdAt: number;
+  lastFetchedAt: number | null;
+  lastError: string | null;
+  articles: number;
+  unread: number;
+  postsThisWeek: number;
+  lastPostAt: number | null;
+  refreshIntervalMinutes: number;
+  automations: LinkedAutomations;
+  log: FeedFetch[];
+};
+
 /** `count` is how many visible articles carry the tag; `feedToken` is set while its RSS output feed is on. */
 export type Tag = { id: number; name: string; feedToken: string | null; count: number };
 
