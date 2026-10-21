@@ -16,6 +16,8 @@
 # next.js
 /.next/
 /out/
+# Written by `next dev` when an AI agent starts it; the same rules are in CLAUDE.md.
+/AGENTS.md
 
 # production
 /build
