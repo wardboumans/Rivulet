@@ -1,6 +1,7 @@
 import { JSDOM, VirtualConsole } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { getDb } from "./db";
+import { isGoogleNewsLink } from "./googleNews";
 import { fetchText } from "./http";
 import { sanitizeHtml } from "./html";
 import { indexArticle } from "./search";
@@ -14,6 +15,7 @@ export async function fetchFullText(articleId: number): Promise<string> {
   if (!a) throw new Error("Article not found");
   if (a.full_content) return a.full_content;
   if (!a.url) throw new Error("Article has no link");
+  if (isGoogleNewsLink(a.url)) throw new Error("Google News links only lead to the article in a browser; open the original instead");
 
   const res = await fetchText(a.url, { accept: "text/html,application/xhtml+xml", timeoutMs: 20000, maxBytes: 8 * 1024 * 1024 });
   if (res.status >= 400) throw new Error(`HTTP ${res.status}`);

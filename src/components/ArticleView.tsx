@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { api, hostname, timeAgo } from "@/lib/client";
+import { isGoogleNewsLink } from "@/lib/googleNews";
 import type {
   AppSettings,
   ArticleDetail,
@@ -132,8 +133,9 @@ export function ArticleView({
       setSummary(d.summary);
       if (d.fullContent) setShowFull(true);
       // The feed only gave us a teaser: pull the full article automatically. YouTube items are
-      // a player plus description; the watch page has nothing more to extract.
-      else if (autoFullText && d.url && d.contentLength < 600 && !isVideo(d.content))
+      // a player plus description; the watch page has nothing more to extract. Google News
+      // links only redirect in a browser, so there's nothing to fetch from the server.
+      else if (autoFullText && d.url && d.contentLength < 600 && !isVideo(d.content) && !isGoogleNewsLink(d.url))
         loadFullText(d.id, () => cancelled);
     });
     return () => {

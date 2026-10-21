@@ -8,6 +8,7 @@ import { applyFiltersToArticles, reapplyFilters } from "./filters";
 import { indexArticle } from "./search";
 import { getSettings } from "./settings";
 import { YOUTUBE_FEED_LIKE, isYouTubeFeed, youTubeArticleHtml, youTubeVideoId } from "./youtube";
+import { isGoogleNewsFeed, stripSource } from "./googleNews";
 import type { FolderAutomations, LinkedAutomations } from "./types";
 
 type MediaAttr = { $?: { url?: string; medium?: string; type?: string } };
@@ -19,6 +20,8 @@ type Item = Parser.Item & {
   author?: string;
   "dc:creator"?: string;
   id?: string;
+  /** Google News: the publisher, as `{ _: name, $: { url } }`. */
+  source?: unknown;
 };
 
 const parser: Parser<Record<string, unknown>, Item> = new Parser({
@@ -29,6 +32,7 @@ const parser: Parser<Record<string, unknown>, Item> = new Parser({
       ["media:group", "mediaGroup"],
       ["dc:creator", "dc:creator"],
       ["id", "id"],
+      ["source", "source"],
     ],
   },
 });
@@ -176,6 +180,7 @@ async function storeItems(
   // and without their rows INSERT OR IGNORE would re-add them as unread on the next fetch. A new
   // feed imports everything, so it never starts out empty.
   const cutoff = initial ? null : retentionCutoff(isYouTubeFeed(feed.feed_url));
+  const googleNews = isGoogleNewsFeed(feed.feed_url);
 
   let added = 0;
   const toIndex: { id: number; title: string; content: string }[] = [];
@@ -191,7 +196,9 @@ async function storeItems(
         ? youTubeArticleHtml(videoId, text(item.mediaGroup?.["media:description"]))
         : text(item["content:encoded"]) || text(item.content) || text(item.summary) || "";
       const plain = htmlToText(rawHtml);
-      const rawTitle = text(item.title);
+      // Google News names the publisher separately; show it as the author, not in the title.
+      const source = googleNews ? text(item.source) : null;
+      const rawTitle = stripSource(text(item.title), source);
       const guid =
         text(item.guid) || text(item.id) || link || crypto.createHash("sha1").update(`${rawTitle ?? ""}|${rawHtml.slice(0, 500)}`).digest("hex");
       const content = rawHtml ? sanitizeHtml(rawHtml, link ?? siteUrl) : "";
@@ -201,9 +208,10 @@ async function storeItems(
         guid,
         url: link ?? null,
         title,
-        author: text(item.creator) || text(item["dc:creator"]) || text(item.author),
+        author: source || text(item.creator) || text(item["dc:creator"]) || text(item.author),
         content,
-        excerpt: plain.slice(0, 400),
+        // A Google News description is the headline again plus related coverage: no excerpt.
+        excerpt: googleNews ? "" : plain.slice(0, 400),
         image_url: mediaUrl(item) || firstImage(rawHtml, link ?? siteUrl) || null,
         published_at: publishedAt,
         created_at: now,

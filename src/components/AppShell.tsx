@@ -33,6 +33,7 @@ import {
   AddFeedPage,
   AddPanel,
   YouTubePage,
+  GoogleNewsPage,
   AddTabsMobile,
   ImportPage,
   type AddTab,
@@ -1134,6 +1135,16 @@ export function AppShell() {
           )}
           {mode.tab === "youtube" && (
             <YouTubePage
+              sidebar={sidebar}
+              defaultFolderId={scope.kind === "folder" ? scope.id : null}
+              onAdded={async (feedId) => {
+                await loadSidebar();
+                select({ kind: "feed", id: feedId });
+              }}
+            />
+          )}
+          {mode.tab === "google-news" && (
+            <GoogleNewsPage
               sidebar={sidebar}
               defaultFolderId={scope.kind === "folder" ? scope.id : null}
               onAdded={async (feedId) => {

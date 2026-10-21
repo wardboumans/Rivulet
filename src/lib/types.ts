@@ -78,6 +78,11 @@ export type FeedProperties = {
   log: FeedFetch[];
 };
 
+export type GoogleNewsPreview = {
+  feedUrl: string;
+  items: { title: string; source: string | null; url: string | null; publishedAt: number | null }[];
+};
+
 /** `count` is how many visible articles carry the tag; `feedToken` is set while its RSS output feed is on. */
 export type Tag = { id: number; name: string; feedToken: string | null; count: number };
 
