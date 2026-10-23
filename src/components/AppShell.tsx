@@ -1081,13 +1081,14 @@ export function AppShell() {
       savedCount={sidebar?.savedCount ?? 0}
       theme={theme}
       sidebarCollapsed={sidebarCollapsed}
-      onFeeds={() =>
-        mode.kind !== "read"
-          ? (setMode({ kind: "read" }), setSidebarCollapsed(false))
-          : savedView || scope.kind === "search"
-            ? select({ kind: "all" })
-            : setSidebarCollapsed((c) => !c)
-      }
+      onFeeds={() => {
+        if (mode.kind === "read" && !savedView && !searchMode)
+          return setSidebarCollapsed((c) => !c);
+        // From Saved or Search (also by way of Automate etc.) Feeds goes to All articles.
+        if (savedView || searchMode) select({ kind: "all" });
+        else setMode({ kind: "read" });
+        setSidebarCollapsed(false);
+      }}
       onSaved={() => select({ kind: "saved" })}
       onSearch={() => select({ kind: "search", q: "" })}
       onAutomate={() => {
