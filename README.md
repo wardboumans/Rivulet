@@ -16,7 +16,7 @@ A self-hosted, single-user RSS reader with a three-pane layout. Built with Next.
 - **Tags**: tag articles from the reader, with suggestions from your existing tags and (with an OpenRouter key) AI; browse them under **Saved**
 - **Output feeds**: publish a tag or folder as a public feed in RSS, JSON Feed or OPML
 - **Monitoring feeds**: saved keyword searches that act like feeds
-- **Automations**: email (SendGrid), push (Pushover) or tag automatically when a new article matches your conditions
+- **Automations**: when a new article matches your conditions, email it (SendGrid, optionally with its AI summary), push it (Pushover), tag it, mark it read, add it to Read later or summarize it
 - **Filters**: hide matching articles, or keep only matching ones, per feed or folder
 - **Read state**: marked read on open; mark a whole section read, or only older items
 - **OPML** import and export
@@ -44,7 +44,7 @@ The database is created at `data/reader.db` (override with `DATABASE_PATH`) and 
 
 ## Tags and output feeds
 
-Use the tag button above an article to add tags: search, click to toggle, or type a new name and press Enter. **Suggested tags** offers your existing tags that appear in the article and, with an OpenRouter key, tags suggested by the AI model. Rules can tag articles too: add an **Assign tag** action, and use **Run rule** to tag articles you already have.
+Use the tag button above an article to add tags: search, click to toggle, or type a new name and press Enter. **Suggested tags** offers your existing tags that appear in the article and, with an OpenRouter key, tags suggested by the AI model. Rules can tag articles too: add an **Assign tag** action, and use **Run rule** to tag articles you already have (Run rule also applies **Mark as read** and **Add to Read later** actions). **Run AI summary** and **Email AI summary** summarize up to 20 new matches per refresh with your OpenRouter model and store the summary on the article.
 
 The **Saved** button in the rail switches the sidebar to Read later, Archive and your tags. Archived articles (button above the article, or `e`) are never removed by retention; neither are tagged ones.
 

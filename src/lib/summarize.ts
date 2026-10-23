@@ -9,19 +9,19 @@ export function hasOpenRouterKey() {
   return !!getCredential("openrouterApiKey");
 }
 
-/**
- * Stream a summary from OpenRouter as plain text chunks. The full summary is cached on the
- * article once the stream completes.
- */
-export async function streamSummary(articleId: number): Promise<ReadableStream<Uint8Array>> {
-  const key = getCredential("openrouterApiKey");
-  if (!key) throw new Error("No OpenRouter API key: add one in Settings → AI summaries");
+type SummaryArticle = { id: number; title: string; content: string | null; full_content: string | null; summary: string | null };
 
-  const db = getDb();
-  const a = db.prepare("SELECT id, title, content, full_content FROM articles WHERE id = ?").get(articleId) as
-    | { id: number; title: string; content: string | null; full_content: string | null }
+function loadArticle(articleId: number): SummaryArticle {
+  const a = getDb().prepare("SELECT id, title, content, full_content, summary FROM articles WHERE id = ?").get(articleId) as
+    | SummaryArticle
     | undefined;
   if (!a) throw new Error("Article not found");
+  return a;
+}
+
+async function requestSummary(a: SummaryArticle, stream: boolean): Promise<Response> {
+  const key = getCredential("openrouterApiKey");
+  if (!key) throw new Error("No OpenRouter API key: add one in Settings → AI summaries");
 
   const text = htmlToText(a.full_content || a.content || "").slice(0, MAX_INPUT_CHARS);
   const res = await fetch(ENDPOINT, {
@@ -34,7 +34,7 @@ export async function streamSummary(articleId: number): Promise<ReadableStream<U
     },
     body: JSON.stringify({
       model: getSettings().openrouterModel,
-      stream: true,
+      stream,
       messages: [
         {
           role: "system",
@@ -49,8 +49,31 @@ export async function streamSummary(articleId: number): Promise<ReadableStream<U
     const body = await res.text().catch(() => "");
     throw new Error(`OpenRouter error ${res.status}: ${body.slice(0, 200)}`);
   }
+  return res;
+}
 
-  const upstream = res.body.pipeThrough(new TextDecoderStream()).getReader();
+/** The article's stored summary, or a new one from OpenRouter (stored on the article). For rules. */
+export async function summarizeArticle(articleId: number): Promise<string> {
+  const a = loadArticle(articleId);
+  if (a.summary?.trim()) return a.summary;
+  const json = await (await requestSummary(a, false)).json();
+  if (json.error) throw new Error(`OpenRouter: ${json.error.message ?? "summary failed"}`);
+  const summary = String(json.choices?.[0]?.message?.content ?? "").trim();
+  if (!summary) throw new Error("OpenRouter returned an empty summary");
+  getDb().prepare("UPDATE articles SET summary = ? WHERE id = ?").run(summary, a.id);
+  return summary;
+}
+
+/**
+ * Stream a summary from OpenRouter as plain text chunks. The full summary is cached on the
+ * article once the stream completes.
+ */
+export async function streamSummary(articleId: number): Promise<ReadableStream<Uint8Array>> {
+  const db = getDb();
+  const a = loadArticle(articleId);
+  const res = await requestSummary(a, true);
+
+  const upstream = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   const encoder = new TextEncoder();
   let buffer = "";
   let full = "";

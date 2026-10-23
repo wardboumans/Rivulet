@@ -1,6 +1,7 @@
 import { getDb } from "./db";
 import { htmlToText } from "./html";
 import { getCredential } from "./settings";
+import { hasOpenRouterKey, summarizeArticle } from "./summarize";
 import { ensureTag, getTag, tagArticles } from "./tags";
 import type {
   ActionResult, PushoverPriority, Rule, RuleAction, RuleCondition, RuleDefinition, RuleField, RuleMatch, RuleOp, RuleRunResult,
@@ -13,8 +14,11 @@ export function providers() {
   return {
     email: !!(getCredential("sendgridApiKey") && getCredential("sendgridFrom")),
     pushover: !!(getCredential("pushoverAppToken") && getCredential("pushoverUserKey")),
+    ai: hasOpenRouterKey(),
   };
 }
+
+const EMAIL_RE = /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
 
 // ---------- storage & validation ----------
 
@@ -54,11 +58,12 @@ export function normalizeDefinition(input: unknown, { createTags = true }: { cre
   const conditions = normalizeConditions(d.conditions);
 
   const actions: RuleAction[] = (Array.isArray(d.actions) ? d.actions : []).map((a) => {
-    if (a?.type === "email") {
+    if (a?.type === "email" || a?.type === "email_summary") {
       const to = String(a.to ?? "").trim();
-      if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(to)) throw new Error(`Enter a valid email address${to ? `: ${to}` : ""}`);
-      return { type: "email", to };
+      if (!EMAIL_RE.test(to)) throw new Error(`Enter a valid email address${to ? `: ${to}` : ""}`);
+      return { type: a.type, to };
     }
+    if (a?.type === "mark_read" || a?.type === "save" || a?.type === "summarize") return { type: a.type };
     if (a?.type === "pushover") {
       const priority = ([-1, 0, 1] as const).includes(a.priority as PushoverPriority) ? (a.priority as PushoverPriority) : 0;
       const device = String(a.device ?? "").trim();
@@ -236,7 +241,17 @@ async function failureText(res: Response) {
   return `${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
 }
 
-async function sendEmail(to: string, ruleName: string, articles: RuleArticle[]) {
+/** The model's markdown bullets (see DEFAULT_SUMMARY_PROMPT) as email HTML. */
+function summaryHtml(summary: string) {
+  const inline = (s: string) => esc(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const lines = summary.split("\n").map((l) => l.trim()).filter(Boolean);
+  const bullet = /^[-*•]\s+/;
+  if (!lines.some((l) => bullet.test(l))) return lines.map((l) => `<p style="margin:0 0 6px">${inline(l)}</p>`).join("");
+  return `<ul style="margin:0;padding-left:20px">${lines.map((l) => `<li style="margin:0 0 4px">${inline(l.replace(bullet, ""))}</li>`).join("")}</ul>`;
+}
+
+/** With `summaries`, an article's AI summary replaces its excerpt. */
+async function sendEmail(to: string, ruleName: string, articles: RuleArticle[], summaries?: Map<number, string>) {
   const key = getCredential("sendgridApiKey");
   const from = getCredential("sendgridFrom");
   if (!key || !from) throw new Error("SendGrid isn't set up: add an API key and sender address in Settings → Notifications");
@@ -244,8 +259,13 @@ async function sendEmail(to: string, ruleName: string, articles: RuleArticle[]) 
   const subject =
     articles.length === 1 ? `[${ruleName}] ${clip(articles[0].title, 150)}` : `[${ruleName}] ${articles.length} new articles`;
   const shown = articles.slice(0, 50);
+  const bodyText = (a: RuleArticle) => summaries?.get(a.id) ?? clip(a.excerpt ?? "", 300);
+  const bodyHtml = (a: RuleArticle) => {
+    const s = summaries?.get(a.id);
+    return s ? summaryHtml(s) : esc(clip(a.excerpt ?? "", 300));
+  };
   const text =
-    shown.map((a) => `${a.title}\n${a.feed_title}${a.url ? `\n${a.url}` : ""}\n${clip(a.excerpt ?? "", 300)}`).join("\n\n---\n\n") +
+    shown.map((a) => `${a.title}\n${a.feed_title}${a.url ? `\n${a.url}` : ""}\n${bodyText(a)}`).join("\n\n---\n\n") +
     (articles.length > shown.length ? `\n\n…and ${articles.length - shown.length} more.` : "") +
     `\n\nSent by the Rivulet rule “${ruleName}”.`;
   const html = `<div style="font-family:system-ui,sans-serif;max-width:640px">
@@ -254,7 +274,7 @@ ${shown
     (a) => `<div style="margin:0 0 20px">
   <a href="${esc(a.url ?? "#")}" style="font-size:17px;font-weight:700;color:#1b8576;text-decoration:none">${esc(a.title)}</a>
   <div style="color:#6b6b69;font-size:13px;margin:4px 0">${esc(a.feed_title)}</div>
-  <div style="color:#1d1d1c;font-size:14px;line-height:1.5">${esc(clip(a.excerpt ?? "", 300))}</div>
+  <div style="color:#1d1d1c;font-size:14px;line-height:1.5">${bodyHtml(a)}</div>
 </div>`,
   )
   .join("\n")}
@@ -318,22 +338,109 @@ async function sendPushover(action: Extract<RuleAction, { type: "pushover" }>, r
 }
 
 function actionLabel(a: RuleAction) {
-  if (a.type === "tag") return `Tag “${getTag(a.tagId)?.name ?? "deleted tag"}”`;
-  return a.type === "email" ? `Email to ${a.to}` : "Pushover notification";
+  switch (a.type) {
+    case "tag":
+      return `Tag “${getTag(a.tagId)?.name ?? "deleted tag"}”`;
+    case "email":
+      return `Email to ${a.to}`;
+    case "email_summary":
+      return `Email AI summary to ${a.to}`;
+    case "pushover":
+      return "Pushover notification";
+    case "mark_read":
+      return "Mark as read";
+    case "save":
+      return "Add to Read later";
+    case "summarize":
+      return "AI summary";
+  }
 }
+
+/** Actions that notify someone; "Send test" runs only these. */
+const NOTIFY_ACTIONS: RuleAction["type"][] = ["email", "email_summary", "pushover"];
 
 function assignTag(tagId: number, articles: RuleArticle[]): number {
   if (!getTag(tagId)) throw new Error("The tag no longer exists");
   return tagArticles(tagId, articles.map((a) => a.id));
 }
 
+/** Run `sql` (params: now, article id) for each article; returns how many rows changed. */
+function updateArticles(sql: string, articles: RuleArticle[]): number {
+  const db = getDb();
+  const stmt = db.prepare(sql);
+  const now = Date.now();
+  return db.transaction(() => articles.reduce((n, a) => n + stmt.run(now, a.id).changes, 0))();
+}
+
+const markRead = (articles: RuleArticle[]) =>
+  updateArticles("UPDATE articles SET is_read = 1, read_at = ? WHERE id = ? AND is_read = 0", articles);
+const saveForLater = (articles: RuleArticle[]) =>
+  updateArticles("UPDATE articles SET is_saved = 1, saved_at = ? WHERE id = ? AND is_saved = 0", articles);
+
+/** A rule summarizes at most this many matches per run (newest first); the rest keep their excerpt. */
+const MAX_RULE_SUMMARIES = 20;
+const SUMMARY_CONCURRENCY = 4;
+
+type Summaries = { summaries: Map<number, string>; error: string | null };
+
+/** Summaries for the newest matches, reusing ones already stored on the article. */
+async function summarizeArticles(articles: RuleArticle[]): Promise<Summaries> {
+  if (!hasOpenRouterKey()) return { summaries: new Map(), error: "No OpenRouter API key: add one in Settings → AI summaries" };
+  const todo = articles.slice(0, MAX_RULE_SUMMARIES);
+  const summaries = new Map<number, string>();
+  const errors: string[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const a = todo[next++];
+      try {
+        summaries.set(a.id, await summarizeArticle(a.id));
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: SUMMARY_CONCURRENCY }, worker));
+  const error = errors.length ? `${errors.length} of ${todo.length} summaries failed: ${errors[0]}` : null;
+  return { summaries, error };
+}
+
 async function runActions(name: string, def: RuleDefinition, articles: RuleArticle[]): Promise<ActionResult[]> {
   const results: ActionResult[] = [];
+  // "AI summary" and "Email AI summary" in one rule share the same summaries.
+  let summaries: Promise<Summaries> | undefined;
+  const getSummaries = () => (summaries ??= summarizeArticles(articles));
   for (const action of def.actions) {
     try {
-      if (action.type === "tag") assignTag(action.tagId, articles);
-      else if (action.type === "email") await sendEmail(action.to, name, articles);
-      else await sendPushover(action, name, articles);
+      switch (action.type) {
+        case "tag":
+          assignTag(action.tagId, articles);
+          break;
+        case "mark_read":
+          markRead(articles);
+          break;
+        case "save":
+          saveForLater(articles);
+          break;
+        case "summarize": {
+          const s = await getSummaries();
+          if (s.error) throw new Error(s.error);
+          break;
+        }
+        case "email":
+          await sendEmail(action.to, name, articles);
+          break;
+        case "email_summary": {
+          // Articles whose summary failed fall back to their excerpt; only fail if none worked.
+          const s = await getSummaries();
+          if (s.error && !s.summaries.size) throw new Error(s.error);
+          await sendEmail(action.to, name, articles, s.summaries);
+          break;
+        }
+        case "pushover":
+          await sendPushover(action, name, articles);
+          break;
+      }
       results.push({ action: actionLabel(action), ok: true });
     } catch (e) {
       results.push({ action: actionLabel(action), ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -389,27 +496,35 @@ function triggerArticles(t: RuleTrigger, limit: number): RuleArticle[] {
 /**
  * Send a test for a (possibly unsaved) rule's notification actions using the newest article it
  * matches in its trigger scope, falling back to the newest article in scope so delivery can be
- * checked either way. Tag actions are skipped: "Run rule" applies those.
+ * checked either way. Tag, mark read, Read later and AI summary actions are skipped ("Run rule"
+ * applies the first three); "Email AI summary" still summarizes the test article.
  */
 export async function testRule(name: string, def: RuleDefinition): Promise<RuleTestResult> {
   const candidates = triggerArticles(def.trigger, 300);
   const hit = candidates.find((a) => ruleMatches(def, a));
   const article = hit ?? candidates[0];
   if (!article) return { article: null, matched: false, results: [] };
-  const notify = { ...def, actions: def.actions.filter((a) => a.type !== "tag") };
+  const notify = { ...def, actions: def.actions.filter((a) => NOTIFY_ACTIONS.includes(a.type)) };
   const results = await runActions(`${name || "Test rule"} (test)`, notify, [article]);
   return { article: { id: article.id, title: article.title }, matched: !!hit, results };
 }
 
 export const RUN_RULE_LIMIT = 5000;
 
-/** Apply a rule's tag actions to the existing articles it matches (newest first, up to RUN_RULE_LIMIT). */
-export function runRuleTags(def: RuleDefinition): RuleRunResult {
+/**
+ * Apply a rule's tag, mark read and Read later actions to the existing articles it matches (newest
+ * first, up to RUN_RULE_LIMIT). Notifications and AI summaries only run for new articles.
+ */
+export function runRuleOnExisting(def: RuleDefinition): RuleRunResult {
   const candidates = triggerArticles(def.trigger, RUN_RULE_LIMIT);
   const matched = candidates.filter((a) => ruleMatches(def, a));
-  let tagged = 0;
-  for (const action of def.actions) if (action.type === "tag") tagged += assignTag(action.tagId, matched);
-  return { checked: candidates.length, matched: matched.length, tagged };
+  const result: RuleRunResult = { checked: candidates.length, matched: matched.length, tagged: 0, markedRead: 0, saved: 0 };
+  for (const action of def.actions) {
+    if (action.type === "tag") result.tagged += assignTag(action.tagId, matched);
+    else if (action.type === "mark_read") result.markedRead += markRead(matched);
+    else if (action.type === "save") result.saved += saveForLater(matched);
+  }
+  return result;
 }
 
 /** Keep the match log from growing forever. */
@@ -430,7 +545,7 @@ export async function sendTestNotification(channel: "email" | "pushover", to?: s
     published_at: Date.now(),
   };
   if (channel === "email") {
-    if (!to || !/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(to)) throw new Error("Enter the address to send the test to");
+    if (!to || !EMAIL_RE.test(to)) throw new Error("Enter the address to send the test to");
     await sendEmail(to, "Settings test", [sample]);
   } else {
     await sendPushover({ type: "pushover", priority: 0, device: "" }, "Settings test", [sample]);

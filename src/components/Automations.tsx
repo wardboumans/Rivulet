@@ -78,7 +78,7 @@ const SECTIONS: {
     label: "Rules",
     icon: <Zap size={17} />,
     description:
-      "Get an email or a push notification, or tag articles, when a new article matches your conditions.",
+      "Get an email or a push notification, or tag, save, summarize or mark articles read, when a new article matches your conditions.",
   },
   {
     id: "filters",
@@ -380,6 +380,34 @@ export function Toggle({
 
 type RuleTargetPreset = { feedId?: number; folderId?: number };
 
+const ACTION_LABELS: Record<RuleAction["type"], string> = {
+  email: "Send to email",
+  email_summary: "Email AI summary",
+  pushover: "Push notification (Pushover)",
+  tag: "Assign tag",
+  mark_read: "Mark as read",
+  save: "Add to Read later",
+  summarize: "Run AI summary",
+};
+
+/** Actions "Run rule" can apply to existing articles. */
+const RUNNABLE_ACTIONS: RuleAction["type"][] = ["tag", "mark_read", "save"];
+const NOTIFY_ACTIONS: RuleAction["type"][] = ["email", "email_summary", "pushover"];
+
+function blankAction(type: RuleAction["type"]): RuleAction {
+  switch (type) {
+    case "email":
+    case "email_summary":
+      return { type, to: "" };
+    case "pushover":
+      return { type, priority: 0, device: "" };
+    case "tag":
+      return { type, tagId: 0, tagName: "" };
+    default:
+      return { type };
+  }
+}
+
 function newDraft(
   providers: Providers | null,
   preset?: RuleTargetPreset,
@@ -642,8 +670,9 @@ export function RulesPage({
               onAction={() => setOpen("new")}
             >
               Get an email or a push notification the moment a feed publishes
-              something you care about, or tag it automatically. Pick a feed,
-              add conditions, and choose what should happen.
+              something you care about, or tag, save, summarize or mark it
+              read automatically. Pick a feed, add conditions, and choose what
+              should happen.
             </EmptyState>
           )}
           {!data && (
@@ -816,27 +845,45 @@ function RuleEditor({
     }
   }
 
-  const hasNotify = def.actions.some((a) => a.type !== "tag");
-  const hasTag = def.actions.some((a) => a.type === "tag");
+  const hasNotify = def.actions.some((a) => NOTIFY_ACTIONS.includes(a.type));
+  const hasRunnable = def.actions.some((a) =>
+    RUNNABLE_ACTIONS.includes(a.type),
+  );
 
-  const providerHint = (a: RuleAction) =>
-    a.type === "email" && !providers.email ? (
-      <p className="text-xs text-danger">
-        SendGrid isn’t set up yet:{" "}
-        <AppLink href="/settings/notifications" className="underline">
-          add an API key and sender address in Settings
-        </AppLink>
-        .
-      </p>
-    ) : a.type === "pushover" && !providers.pushover ? (
-      <p className="text-xs text-danger">
-        Pushover isn’t set up yet:{" "}
-        <AppLink href="/settings/notifications" className="underline">
-          add an app token and user key in Settings
-        </AppLink>
-        .
-      </p>
-    ) : null;
+  const setupHint = (what: string, link: string, href: string) => (
+    <p key={what} className="text-xs text-danger">
+      {what} isn’t set up yet:{" "}
+      <AppLink href={href} className="underline">
+        {link}
+      </AppLink>
+      .
+    </p>
+  );
+  const providerHint = (a: RuleAction) => (
+    <>
+      {(a.type === "email" || a.type === "email_summary") &&
+        !providers.email &&
+        setupHint(
+          "SendGrid",
+          "add an API key and sender address in Settings",
+          "/settings/notifications",
+        )}
+      {(a.type === "summarize" || a.type === "email_summary") &&
+        !providers.ai &&
+        setupHint(
+          "AI summaries",
+          "add an OpenRouter API key in Settings",
+          "/settings/ai",
+        )}
+      {a.type === "pushover" &&
+        !providers.pushover &&
+        setupHint(
+          "Pushover",
+          "add an app token and user key in Settings",
+          "/settings/notifications",
+        )}
+    </>
+  );
 
   return (
     <div className="space-y-3">
@@ -897,23 +944,31 @@ function RuleEditor({
               <select
                 className={`${selectClass} w-full shrink-0 sm:w-[230px]`}
                 value={a.type}
-                onChange={(e) =>
-                  setAction(
-                    i,
-                    e.target.value === "email"
-                      ? { type: "email", to: "" }
-                      : e.target.value === "tag"
-                        ? { type: "tag", tagId: 0, tagName: "" }
-                        : { type: "pushover", priority: 0, device: "" },
-                  )
-                }
+                onChange={(e) => {
+                  const next = blankAction(
+                    e.target.value as RuleAction["type"],
+                  );
+                  // Switching between the two email actions keeps the address.
+                  if ("to" in next && "to" in a) next.to = a.to;
+                  setAction(i, next);
+                }}
                 aria-label="Action"
               >
-                <option value="email">Send to email</option>
-                <option value="pushover">Push notification (Pushover)</option>
-                <option value="tag">Assign tag</option>
+                {Object.entries(ACTION_LABELS).map(([v, l]) => (
+                  <option key={v} value={v}>
+                    {l}
+                  </option>
+                ))}
               </select>
-              {a.type === "tag" ? (
+              {a.type === "mark_read" ||
+              a.type === "save" ||
+              a.type === "summarize" ? (
+                <span className="min-w-0 flex-1 text-[13px] text-muted">
+                  {a.type === "summarize"
+                    ? "Up to 20 newest matches per refresh"
+                    : ""}
+                </span>
+              ) : a.type === "tag" ? (
                 <>
                   <select
                     className={`${selectClass} min-w-0 flex-1`}
@@ -946,7 +1001,7 @@ function RuleEditor({
                     />
                   )}
                 </>
-              ) : a.type === "email" ? (
+              ) : a.type === "email" || a.type === "email_summary" ? (
                 <input
                   type="email"
                   className={`${inputClass} h-10 min-w-0 flex-1`}
@@ -1017,7 +1072,16 @@ function RuleEditor({
         <p className="flex items-center gap-2 rounded-md border border-line bg-sidebar px-4 py-3 text-sm">
           <TagIcon size={15} className="shrink-0 text-accent" />
           {run.matched
-            ? `${run.matched} of ${run.checked} existing articles matched; ${run.tagged} newly tagged.`
+            ? `${run.matched} of ${run.checked} existing articles matched; ${[
+                def.actions.some((a) => a.type === "tag") &&
+                  `${run.tagged} newly tagged`,
+                def.actions.some((a) => a.type === "mark_read") &&
+                  `${run.markedRead} marked read`,
+                def.actions.some((a) => a.type === "save") &&
+                  `${run.saved} added to Read later`,
+              ]
+                .filter(Boolean)
+                .join(", ")}.`
             : `None of the ${run.checked} existing articles matched.`}
         </p>
       )}
@@ -1040,12 +1104,12 @@ function RuleEditor({
               Send test
             </button>
           )}
-          {hasTag && (
+          {hasRunnable && (
             <button
               type="button"
               onClick={runRule}
               disabled={running}
-              title="Tag the existing articles this rule matches (newest 5,000 in scope)"
+              title="Apply the tag, mark read and Read later actions to the existing articles this rule matches (newest 5,000 in scope)"
               className={secondaryButton}
             >
               {running ? (

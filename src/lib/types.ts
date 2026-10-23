@@ -168,12 +168,17 @@ export type RuleTrigger = { type: "new_article"; feedId: number | null; folderId
 export type PushoverPriority = -1 | 0 | 1;
 /**
  * `tag` assigns a tag to matching articles. In the editor `tagId` may be 0 with a `tagName`: saving
- * the rule creates that tag and stores its id.
+ * the rule creates that tag and stores its id. `save` adds to Read later; `summarize` stores an AI
+ * summary on the article; `email_summary` emails the AI summaries instead of excerpts.
  */
 export type RuleAction =
   | { type: "email"; to: string }
+  | { type: "email_summary"; to: string }
   | { type: "pushover"; priority: PushoverPriority; device: string }
-  | { type: "tag"; tagId: number; tagName?: string };
+  | { type: "tag"; tagId: number; tagName?: string }
+  | { type: "mark_read" }
+  | { type: "save" }
+  | { type: "summarize" };
 
 export type RuleDefinition = { trigger: RuleTrigger; conditions: RuleCondition[]; wholeWords: boolean; actions: RuleAction[] };
 
@@ -183,14 +188,14 @@ export type RuleSummary = Rule & { matchesToday: number; lastError: string | nul
 
 export type RuleMatch = { id: number; articleId: number | null; title: string; matchedAt: number; status: "sent" | "partial" | "failed"; error: string | null };
 
-export type RulesResponse = { rules: RuleSummary[]; providers: { email: boolean; pushover: boolean } };
+export type RulesResponse = { rules: RuleSummary[]; providers: { email: boolean; pushover: boolean; ai: boolean } };
 
 export type ActionResult = { action: string; ok: boolean; error?: string };
 
 export type RuleTestResult = { article: { id: number; title: string } | null; matched: boolean; results: ActionResult[] };
 
-/** Result of running a rule's tag actions over existing articles. */
-export type RuleRunResult = { checked: number; matched: number; tagged: number };
+/** Result of running a rule's tag / mark read / Read later actions over existing articles. */
+export type RuleRunResult = { checked: number; matched: number; tagged: number; markedRead: number; saved: number };
 
 // ---------- Filters ----------
 
