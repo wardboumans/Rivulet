@@ -152,6 +152,15 @@ function modeFromLocation(): Mode {
   return { kind: "read" };
 }
 
+/** Phone layout (below Tailwind's md breakpoint): the article and the nav drawer cover the screen. */
+const isPhone = () => window.matchMedia("(max-width: 767px)").matches;
+
+/** An open article on a phone has a history entry of its own, so the back button closes it. */
+const articleInHistory = () => !!window.history.state?.article;
+
+/** How far from the left edge a swipe may start to pull the nav drawer open. */
+const DRAWER_EDGE = 32;
+
 function applyTheme(theme: Theme) {
   if (theme === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
@@ -184,6 +193,8 @@ export function AppShell() {
     readStored("rivulet-list-width", 380),
   );
   const [navOpen, setNavOpen] = useState(false);
+  /** While the nav drawer is dragged by a swipe: how far open it is (0–1). */
+  const [drawerDrag, setDrawerDrag] = useState<number | null>(null);
   const [mode, setModeState] = useState<Mode>(modeFromLocation);
 
   const searchMode = scope.kind === "search";
@@ -246,6 +257,8 @@ export function AppShell() {
     const onPop = () => {
       setScope(scopeFromLocation());
       setModeState(modeFromLocation());
+      // Back from an article's entry: close it (the list's own entry has no article flag).
+      if (isPhone() && !articleInHistory()) setSelection(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -454,7 +467,10 @@ export function AppShell() {
   const toggleArchive = useCallback(
     async (a: ArticleListItem) => {
       const isArchived = !a.isArchived;
-      patchItem(a.id, isArchived ? { isArchived, isSaved: false } : { isArchived });
+      patchItem(
+        a.id,
+        isArchived ? { isArchived, isSaved: false } : { isArchived },
+      );
       await api(`/api/articles/${a.id}`, {
         method: "PATCH",
         json: { isArchived },
@@ -466,6 +482,10 @@ export function AppShell() {
 
   const open = useCallback(
     (a: ArticleListItem) => {
+      // On phones the article covers the list like a page, so it gets a history entry and
+      // Android's back button returns to the list. Stepping to the next article reuses it.
+      if (isPhone() && !articleInHistory())
+        window.history.pushState({ article: true }, "", window.location.href);
       setSelectedId(a.id);
       if (!a.isRead) setRead(a, true);
     },
@@ -567,6 +587,70 @@ export function AppShell() {
     select,
   ]);
 
+  // ---------- nav drawer swipe (phones) ----------
+  // Swipe right from the left edge pulls the drawer open; swipe left on it pushes it closed. The
+  // drawer follows the finger and settles by how far (or how fast) it was dragged.
+  useEffect(() => {
+    let drag: { x: number; y: number; t: number; from: number } | null = null;
+    let tracking = false;
+    const drawerWidth = () => Math.min(380, window.innerWidth * 0.9);
+    const progress = (x: number) =>
+      drag
+        ? Math.min(1, Math.max(0, drag.from + (x - drag.x) / drawerWidth()))
+        : 0;
+    const onStart = (e: TouchEvent) => {
+      drag = null;
+      tracking = false;
+      if (!isPhone() || dialog || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (!navOpen && t.clientX > DRAWER_EDGE) return;
+      drag = {
+        x: t.clientX,
+        y: t.clientY,
+        t: e.timeStamp,
+        from: navOpen ? 1 : 0,
+      };
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!drag) return;
+      const t = e.touches[0];
+      const dx = t.clientX - drag.x;
+      const dy = t.clientY - drag.y;
+      if (!tracking) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        // A vertical scroll, or a swipe the wrong way, isn't ours.
+        if (Math.abs(dy) > Math.abs(dx) || (drag.from ? dx > 0 : dx < 0)) {
+          drag = null;
+          return;
+        }
+        tracking = true;
+      }
+      setDrawerDrag(progress(t.clientX));
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (drag && tracking) {
+        const x = e.changedTouches[0]?.clientX ?? drag.x;
+        const velocity = (x - drag.x) / Math.max(1, e.timeStamp - drag.t);
+        const p = progress(x);
+        setNavOpen(velocity > 0.5 ? true : velocity < -0.5 ? false : p > 0.5);
+        setDrawerDrag(null);
+      }
+      drag = null;
+      tracking = false;
+    };
+    const opts = { passive: true };
+    window.addEventListener("touchstart", onStart, opts);
+    window.addEventListener("touchmove", onMove, opts);
+    window.addEventListener("touchend", onEnd, opts);
+    window.addEventListener("touchcancel", onEnd, opts);
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
+    };
+  }, [navOpen, dialog]);
+
   // ---------- sidebar & feed management ----------
   const allFeeds = useMemo(
     () =>
@@ -590,8 +674,8 @@ export function AppShell() {
         title: "Unfollow feed?",
         message: (
           <>
-            “{feed.title}” and all of its articles, including saved,
-            archived and tagged ones, will be deleted.
+            “{feed.title}” and all of its articles, including saved, archived
+            and tagged ones, will be deleted.
             {lost && (
               <span className="mt-3 block text-danger">
                 {lost} for this feed will also be deleted.
@@ -775,8 +859,8 @@ export function AppShell() {
             {rules.length > 0 && (
               <span className="mt-3 block text-danger">
                 {rules.length === 1 ? "The rule" : "The rules"}{" "}
-                {rules.map((r) => `“${r.name}”`).join(", ")} will stop
-                assigning it; a rule left with no actions is disabled.
+                {rules.map((r) => `“${r.name}”`).join(", ")} will stop assigning
+                it; a rule left with no actions is disabled.
               </span>
             )}
           </>
@@ -1198,19 +1282,25 @@ export function AppShell() {
       </div>
 
       {/* Mobile: slide-over nav */}
-      {navOpen && (
+      {(navOpen || drawerDrag !== null) && (
         <div
-          className="fixed inset-0 z-40 flex md:hidden"
+          className="fixed inset-0 z-40 md:hidden"
           onClick={() => setNavOpen(false)}
         >
           <div
-            className="flex h-full w-[min(380px,90vw)] shadow-pop"
+            className="absolute inset-0 bg-black/40"
+            style={{ opacity: drawerDrag ?? 1 }}
+          />
+          <div
+            className={`relative flex h-full w-[min(380px,90vw)] shadow-pop ${drawerDrag === null ? "transition-transform duration-200" : ""}`}
+            style={{
+              transform: `translateX(${((drawerDrag ?? 1) - 1) * 100}%)`,
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             {rail}
             <div className="min-w-0 flex-1">{sidebarPanel}</div>
           </div>
-          <div className="flex-1 bg-black/40" />
         </div>
       )}
 
@@ -1271,8 +1361,8 @@ export function AppShell() {
                   </p>
                 ) : scope.kind === "tagged" || scope.kind === "tag" ? (
                   <p className="text-muted">
-                    No tagged articles yet. Use the tag button above an
-                    article, or an automation rule, to tag articles.
+                    No tagged articles yet. Use the tag button above an article,
+                    or an automation rule, to tag articles.
                   </p>
                 ) : scope.kind === "monitor" ? (
                   <p className="text-muted">
@@ -1303,7 +1393,11 @@ export function AppShell() {
                 onOpenTag={(id) => select({ kind: "tag", id })}
                 onPrev={() => step(-1)}
                 onNext={() => step(1)}
-                onBack={() => setSelectedId(null)}
+                onBack={() =>
+                  articleInHistory()
+                    ? window.history.back()
+                    : setSelectedId(null)
+                }
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-faint">

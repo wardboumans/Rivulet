@@ -98,6 +98,8 @@
 html,
 body {
   height: 100%;
+  /* Edge swipes open the nav drawer, not the browser's swipe-back navigation. */
+  overscroll-behavior-x: none;
 }
 
 body {

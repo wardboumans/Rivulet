@@ -49,7 +49,7 @@ function RailButton({
           </span>
         )}
       </span>
-      {label}
+      <span className="hidden md:inline">{label}</span>
     </button>
   );
 }
@@ -85,7 +85,7 @@ export function Rail({
 }) {
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : SunMoon;
   return (
-    <nav className="flex h-full w-[73px] shrink-0 flex-col items-center bg-rail pb-3 pt-3">
+    <nav className="flex h-full w-14 shrink-0 flex-col items-center bg-rail pb-3 pt-3 md:w-[73px]">
       <div
         className="mb-3 flex h-9 w-9 items-center justify-center"
         aria-label="Rivulet"
@@ -143,7 +143,7 @@ export function Rail({
           type="button"
           onClick={onToggleSidebar}
           title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-          className="mt-2 flex h-8 w-10 items-center justify-center rounded-md bg-white/10 text-rail-fg hover:text-white"
+          className="mt-2 hidden h-8 w-10 items-center justify-center rounded-md bg-white/10 text-rail-fg hover:text-white md:flex"
         >
           {sidebarCollapsed ? (
             <ChevronsRight size={18} />
