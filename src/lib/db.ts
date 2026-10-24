@@ -188,7 +188,19 @@ CREATE TABLE feed_fetches (
 CREATE INDEX idx_feed_fetches_feed ON feed_fetches(feed_id, fetched_at);
 `,
   },
+  {
+    version: 6,
+    sql: `
+-- Covers the columns that id lookups (FTS matches, tags) filter and sort on, so counting or paging
+-- them doesn't read whole article rows. SQLite prefers the rowid for those, so queries name it
+-- with INDEXED BY (ID_INDEX).
+CREATE INDEX idx_articles_state ON articles(id, feed_id, is_read, filtered, published_at);
+`,
+  },
 ];
+
+/** Index for queries that select articles by id (`a.id IN (...)`); see migration 6. */
+export const ID_INDEX = "INDEXED BY idx_articles_state";
 
 const BASELINE_VERSION = 1;
 export const SCHEMA_VERSION = MIGRATIONS.reduce((v, m) => Math.max(v, m.version), BASELINE_VERSION);

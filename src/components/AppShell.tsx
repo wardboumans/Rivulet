@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
   Check,
@@ -275,6 +275,15 @@ export function AppShell() {
     [applySidebar],
   );
 
+  // Stepping through a list marks an article read per keypress; reload the sidebar's counts once
+  // the burst settles instead of after every article.
+  const sidebarTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const loadSidebarSoon = useCallback(() => {
+    clearTimeout(sidebarTimer.current);
+    sidebarTimer.current = setTimeout(() => loadSidebar().catch(() => {}), 800);
+  }, [loadSidebar]);
+  useEffect(() => () => clearTimeout(sidebarTimer.current), []);
+
   const fetchPage = useCallback(
     (after: string | null): Promise<ArticlePage> => {
       if (scope.kind === "search" && !scope.q)
@@ -303,7 +312,7 @@ export function AppShell() {
             key: queryKey,
             items: page.items,
             cursor: page.nextCursor,
-            unread: page.unread,
+            unread: page.unread ?? 0,
             highWater: page.highWater,
             newCount: 0,
           }),
@@ -342,7 +351,7 @@ export function AppShell() {
                   ),
                 ],
                 cursor: page.nextCursor,
-                unread: page.unread,
+                unread: page.unread ?? l.unread,
               }
             : l,
         ),
@@ -446,9 +455,9 @@ export function AppShell() {
       patchItem(a.id, { isRead });
       setScopeUnread((n) => Math.max(0, n + (isRead ? -1 : 1)));
       await api(`/api/articles/${a.id}`, { method: "PATCH", json: { isRead } });
-      loadSidebar();
+      loadSidebarSoon();
     },
-    [loadSidebar],
+    [loadSidebarSoon],
   );
 
   const toggleSave = useCallback(
@@ -458,9 +467,9 @@ export function AppShell() {
         method: "PATCH",
         json: { isSaved: !a.isSaved },
       });
-      loadSidebar();
+      loadSidebarSoon();
     },
-    [loadSidebar],
+    [loadSidebarSoon],
   );
 
   /** Archiving also takes the article out of Read later (see setArticleState). */
@@ -475,9 +484,9 @@ export function AppShell() {
         method: "PATCH",
         json: { isArchived },
       });
-      loadSidebar();
+      loadSidebarSoon();
     },
-    [loadSidebar],
+    [loadSidebarSoon],
   );
 
   const open = useCallback(

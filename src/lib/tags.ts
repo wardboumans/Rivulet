@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb, ID_INDEX } from "./db";
 import { htmlToText } from "./html";
 import { newFeedToken } from "./outputFeeds";
 import { getCredential, getSettings } from "./settings";
@@ -17,7 +17,7 @@ export function cleanTagName(input: unknown): string {
 type TagRow = { id: number; name: string; feed_token: string | null; count: number };
 
 const TAG_SQL = `SELECT t.id, t.name, t.feed_token,
-  (SELECT COUNT(*) FROM article_tags at JOIN articles a ON a.id = at.article_id WHERE at.tag_id = t.id AND a.filtered = 0) AS count
+  (SELECT COUNT(*) FROM article_tags at JOIN articles a ${ID_INDEX} ON a.id = at.article_id WHERE at.tag_id = t.id AND a.filtered = 0) AS count
   FROM tags t`;
 
 const toTag = (r: TagRow): Tag => ({ id: r.id, name: r.name, feedToken: r.feed_token, count: r.count });

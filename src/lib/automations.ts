@@ -180,9 +180,26 @@ function fieldText(a: RuleArticle, field: RuleField): string {
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Filters test the same few patterns against thousands of articles: compile each once. null
+// marks an invalid pattern.
+const regexCache = new Map<string, RegExp | null>();
+function cachedRegex(source: string): RegExp | null {
+  let re = regexCache.get(source);
+  if (re === undefined) {
+    try {
+      re = new RegExp(source, "iu");
+    } catch {
+      re = null;
+    }
+    if (regexCache.size >= 500) regexCache.clear();
+    regexCache.set(source, re);
+  }
+  return re;
+}
+
 function contains(hay: string, needle: string, wholeWords: boolean) {
   if (!wholeWords) return hay.toLowerCase().includes(needle.toLowerCase());
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(needle)}(?![\\p{L}\\p{N}])`, "iu").test(hay);
+  return cachedRegex(`(?<![\\p{L}\\p{N}])${escapeRegex(needle)}(?![\\p{L}\\p{N}])`)!.test(hay);
 }
 
 function testCondition(c: RuleCondition, a: RuleArticle, wholeWords: boolean): boolean {
@@ -196,11 +213,7 @@ function testCondition(c: RuleCondition, a: RuleArticle, wholeWords: boolean): b
     case "is":
       return hay.trim().toLowerCase() === value.toLowerCase();
     case "regex":
-      try {
-        return new RegExp(c.value, "iu").test(hay);
-      } catch {
-        return false;
-      }
+      return cachedRegex(c.value)?.test(hay) ?? false;
   }
 }
 
